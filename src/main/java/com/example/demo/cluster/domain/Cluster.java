@@ -1,0 +1,57 @@
+package com.example.demo.cluster.domain;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import com.example.demo.cluster.domain.enumtype.ClusterEnvironment;
+
+import jakarta.persistence.CascadeType;
+import jakarta.persistence.Column;
+import jakarta.persistence.Embedded;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.Lob;
+import jakarta.persistence.OneToMany;
+import jakarta.persistence.Table;
+
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
+
+@Getter
+@Setter
+@NoArgsConstructor
+@Entity
+@Table(name = "cluster")
+public class Cluster extends BaseEntity {
+
+	@Column(nullable = false, length = 100)
+	private String name;
+
+	@Enumerated(EnumType.STRING)
+	@Column(length = 30)
+	private ClusterEnvironment environment;
+
+	@Column(length = 255)
+	private String domain;
+
+	@Column(name = "external_ip", length = 50)
+	private String externalIp;
+
+	@Column(name = "helm_release_name", length = 100)
+	private String helmReleaseName;
+
+	@Embedded
+	private ClusterPlatformConfig platformConfig = new ClusterPlatformConfig();
+
+	@Lob
+	private String notes;
+
+	@OneToMany(mappedBy = "cluster", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
+	private List<DatabaseInstance> databaseInstances = new ArrayList<>();
+
+	@OneToMany(mappedBy = "cluster", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
+	private List<SecretRef> secretRefs = new ArrayList<>();
+}
