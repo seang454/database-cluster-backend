@@ -24,19 +24,19 @@ repositories {
 }
 
 dependencies {
-	implementation 'io.kubernetes:client-java:26.0.0'
+	implementation 'io.fabric8:kubernetes-client:6.13.0'
 	implementation 'org.yaml:snakeyaml:2.4'
+	implementation 'org.springframework.boot:spring-boot-starter-json'
 	implementation 'org.postgresql:postgresql'
 	implementation 'org.springframework.boot:spring-boot-h2console'
 	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
-	implementation 'org.springframework.boot:spring-boot-starter-jdbc'
 	implementation 'org.springframework.boot:spring-boot-starter-webmvc'
 	compileOnly 'org.projectlombok:lombok'
+	compileOnly 'org.springframework.boot:spring-boot-configuration-processor'
 	developmentOnly 'org.springframework.boot:spring-boot-devtools'
 	annotationProcessor 'org.projectlombok:lombok'
-	testImplementation 'org.springframework.boot:spring-boot-starter-data-jpa-test'
-	testImplementation 'org.springframework.boot:spring-boot-starter-jdbc-test'
-	testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
+	annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
+	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 	testRuntimeOnly 'com.h2database:h2'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }

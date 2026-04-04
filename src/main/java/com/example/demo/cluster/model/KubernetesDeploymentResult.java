@@ -3,7 +3,7 @@ package com.example.demo.cluster.model;
 import java.time.Instant;
 import java.util.List;
 
-public record HelmReleaseResult(
+public record KubernetesDeploymentResult(
 	String releaseName,
 	String namespace,
 	List<String> command,

@@ -1,24 +1,21 @@
 package com.example.demo.cluster.service;
 
 import java.io.IOException;
-import java.io.Writer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import com.example.demo.cluster.dto.CassandraConfigRequest;
+import com.example.demo.cluster.domain.enumtype.DatabaseEngine;
+import com.example.demo.cluster.domain.enumtype.TlsMode;
 import com.example.demo.cluster.dto.ClusterDeploymentRequest;
-import com.example.demo.cluster.dto.DatabaseBackupRequest;
+import com.example.demo.cluster.dto.ClusterPlatformConfigRequest;
 import com.example.demo.cluster.dto.DatabaseInstanceRequest;
 import com.example.demo.cluster.dto.DatabaseResourceRequest;
-import com.example.demo.cluster.dto.MongoConfigRequest;
-import com.example.demo.cluster.dto.MysqlConfigRequest;
-import com.example.demo.cluster.dto.PostgresqlConfigRequest;
-import com.example.demo.cluster.dto.RedisConfigRequest;
-import com.example.demo.cluster.exception.ClusterDeploymentException;
-import com.example.demo.cluster.model.DeploymentTarget;
+import com.example.demo.cluster.dto.DeploymentSecretsRequest;
 
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -28,152 +25,353 @@ import org.yaml.snakeyaml.Yaml;
 @Service
 public class HelmValuesService {
 
-	public Path writeValuesFile(ClusterDeploymentRequest request, DeploymentTarget target) {
+	public Path renderOverrideValues(ClusterDeploymentRequest request) {
 		try {
-			Path file = Files.createTempFile("cluster-values-" + target.releaseName() + "-", ".yaml");
-			try (Writer writer = Files.newBufferedWriter(file)) {
-				yaml().dump(render(request), writer);
-			}
-			return file;
+			// Create a short-lived override file in the OS temp directory for this deploy only.
+			Path tempFile = Files.createTempFile("db-cluster-overrides-", ".yaml");
+			Files.writeString(tempFile, render(request), StandardCharsets.UTF_8);
+			return tempFile;
 		}
 		catch (IOException exception) {
-			throw new ClusterDeploymentException("Failed to write generated values file", exception);
+			throw new IllegalStateException("Failed to write Helm override values", exception);
 		}
 	}
 
-	private Map<String, Object> render(ClusterDeploymentRequest request) {
-		Map<String, Object> root = new LinkedHashMap<>();
-		put(root, "cloudflare.enabled", request.cluster() != null && request.cluster().platformConfig() != null
-			? request.cluster().platformConfig().cloudflareEnabled()
-			: null);
-		put(root, "cloudflare.zoneName", request.cluster() != null && request.cluster().platformConfig() != null
-			? request.cluster().platformConfig().cloudflareZoneName()
-			: null);
-		put(root, "vault.enabled", request.cluster() != null && request.cluster().platformConfig() != null
-			? request.cluster().platformConfig().vaultEnabled()
-			: null);
-
-		disableAllDatabases(root);
-
-		DatabaseInstanceRequest database = request.database();
-		if (database == null || database.engine() == null) {
-			throw new ClusterDeploymentException("Exactly one database configuration is required");
-		}
-
-		String section = database.engine().name().toLowerCase();
-		put(root, section + ".enabled", database.enabled() != null ? database.enabled() : Boolean.TRUE);
-		put(root, section + ".operator.enabled", false);
-		put(root, section + ".externalAccess.enabled", database.externalAccessEnabled());
-		put(root, section + ".externalAccess.publicHostnames", database.publicHostnames());
-		put(root, section + ".tls.enabled", database.tlsEnabled());
-		put(root, section + ".tls.mode", database.tlsMode() != null ? database.tlsMode().name().toLowerCase() : null);
-		put(root, section + ".cluster.instances", database.instances());
-		put(root, section + ".storage.size", database.storageSize());
-		put(root, section + ".storage.storageClass", database.storageClass());
-
-		DatabaseResourceRequest resource = database.resource();
-		if (resource != null) {
-			put(root, section + ".cluster.resources.requests.cpu", resource.cpuRequest());
-			put(root, section + ".cluster.resources.requests.memory", resource.memRequest());
-			put(root, section + ".cluster.resources.limits.cpu", resource.cpuLimit());
-			put(root, section + ".cluster.resources.limits.memory", resource.memLimit());
-		}
-
-		DatabaseBackupRequest backup = database.backup();
-		if (backup != null) {
-			put(root, section + ".backup.enabled", backup.enabled());
-			put(root, section + ".backup.destinationPath", backup.destinationPath());
-			put(root, section + ".backup.credentialSecret", backup.credentialSecret());
-			put(root, section + ".backup.retentionPolicy", backup.retentionPolicy());
-			put(root, section + ".backup.schedule", backup.schedule());
-		}
-
-		switch (database.engine().name()) {
-			case "POSTGRESQL" -> renderPostgresql(root, database.postgresql());
-			case "MONGODB" -> renderMongo(root, database.mongo());
-			case "MYSQL" -> renderMysql(root, database.mysql());
-			case "REDIS" -> renderRedis(root, database.redis());
-			case "CASSANDRA" -> renderCassandra(root, database.cassandra());
-			default -> {
+	public String render(ClusterDeploymentRequest request) {
+		Map<String, Object> values = new LinkedHashMap<>();
+		// The Vault bootstrap stack is installed separately. Spring only deploys the
+		// database release and must not let the chart try to own vault-transit.
+		values.put("vaultTransit", Map.of("enabled", false));
+		values.put("vault", Map.of("enabled", false));
+		ClusterPlatformConfigRequest platformConfig = request.cluster() != null ? request.cluster().platformConfig() : null;
+		if (platformConfig != null) {
+			Map<String, Object> cloudflare = new LinkedHashMap<>();
+			if (platformConfig.cloudflareEnabled() != null) {
+				cloudflare.put("enabled", platformConfig.cloudflareEnabled());
+			}
+			if (StringUtils.hasText(platformConfig.cloudflareZoneName())) {
+				cloudflare.put("zoneName", platformConfig.cloudflareZoneName());
+			}
+			if (request.cluster() != null && StringUtils.hasText(request.cluster().externalIp())) {
+				cloudflare.put("externalIP", request.cluster().externalIp());
+			}
+			if (!cloudflare.isEmpty()) {
+				values.put("cloudflare", cloudflare);
+			}
+			if (platformConfig.vaultEnabled() != null) {
+				values.put("externalSecrets", Map.of("enabled", platformConfig.vaultEnabled()));
 			}
 		}
-		return root;
-	}
 
-	private void disableAllDatabases(Map<String, Object> root) {
-		put(root, "postgresql.enabled", false);
-		put(root, "mongodb.enabled", false);
-		put(root, "mysql.enabled", false);
-		put(root, "redis.enabled", false);
-		put(root, "cassandra.enabled", false);
-	}
-
-	private void renderPostgresql(Map<String, Object> root, PostgresqlConfigRequest request) {
-		if (request == null) {
-			return;
+		DatabaseInstanceRequest database = request.database();
+		if (database != null && database.engine() != null) {
+			values.put(databaseSection(database.engine()), renderDatabase(database, request.secrets()));
 		}
-		put(root, "postgresql.storage.wal.enabled", request.walEnabled());
-		put(root, "postgresql.storage.wal.size", request.walSize());
-		put(root, "postgresql.cluster.bootstrap.database", request.bootstrapDatabase());
-		put(root, "postgresql.cluster.bootstrap.owner", request.bootstrapOwner());
+
+		DumperOptions options = new DumperOptions();
+		options.setDefaultFlowStyle(DumperOptions.FlowStyle.BLOCK);
+		options.setPrettyFlow(true);
+		options.setIndent(2);
+		Yaml yaml = new Yaml(options);
+		return yaml.dump(values);
 	}
 
-	private void renderMongo(Map<String, Object> root, MongoConfigRequest request) {
-		if (request == null) {
-			return;
+	private Map<String, Object> renderDatabase(DatabaseInstanceRequest database, DeploymentSecretsRequest secrets) {
+		Map<String, Object> values = new LinkedHashMap<>();
+		if (database.enabled() != null) {
+			values.put("enabled", database.enabled());
 		}
-		put(root, "mongodb.externalAccess.replicaSetHorizons.enabled", request.replicaSetHorizonsEnabled());
-		put(root, "mongodb.externalAccess.replicaSetHorizons.basePort", request.replicaSetHorizonsBasePort());
+		if (database.externalAccessEnabled() != null || hasAnyPublicHostnames(database)) {
+			Map<String, Object> externalAccess = new LinkedHashMap<>();
+			if (database.externalAccessEnabled() != null) {
+				externalAccess.put("enabled", database.externalAccessEnabled());
+			}
+			if (database.publicHostnames() != null && !database.publicHostnames().isEmpty()) {
+				externalAccess.put("publicHostnames", new ArrayList<>(database.publicHostnames()));
+			}
+			values.put("externalAccess", externalAccess);
+		}
+		if (database.tlsEnabled() != null || database.tlsMode() != null || StringUtils.hasText(database.tlsSecretName()) || StringUtils.hasText(database.tlsCaSecretName())) {
+			Map<String, Object> tls = new LinkedHashMap<>();
+			if (database.tlsEnabled() != null) {
+				tls.put("enabled", database.tlsEnabled());
+			}
+			if (database.tlsMode() != null) {
+				tls.put("mode", toChartTlsMode(database.tlsMode()));
+			}
+			if (StringUtils.hasText(database.tlsSecretName())) {
+				tls.put(secretKey(database.engine()), database.tlsSecretName());
+			}
+			if (StringUtils.hasText(database.tlsCaSecretName())) {
+				String caKey = switch (database.engine()) {
+					case POSTGRESQL -> "existingCASecretName";
+					case MONGODB, MYSQL -> "sslInternalSecretName";
+					case REDIS -> "caSecretName";
+					case CASSANDRA -> "clientSecretName";
+				};
+				tls.put(caKey, database.tlsCaSecretName());
+			}
+			values.put("tls", tls);
+		}
+
+		switch (database.engine()) {
+			case POSTGRESQL -> renderPostgresql(values, database, secrets);
+			case MONGODB -> renderMongo(values, database, secrets);
+			case MYSQL -> renderMysql(values, database, secrets);
+			case REDIS -> renderRedis(values, database, secrets);
+			case CASSANDRA -> renderCassandra(values, database, secrets);
+		}
+		return values;
 	}
 
-	private void renderMysql(Map<String, Object> root, MysqlConfigRequest request) {
-		if (request == null) {
-			return;
+	private void renderPostgresql(Map<String, Object> values, DatabaseInstanceRequest database, DeploymentSecretsRequest secrets) {
+		Map<String, Object> cluster = new LinkedHashMap<>();
+		if (database.instances() != null && database.instances() > 0) {
+			cluster.put("instances", database.instances());
 		}
-		put(root, "mysql.haproxy.size", request.haproxySize());
+		Map<String, Object> bootstrap = new LinkedHashMap<>();
+		if (database.postgresql() != null) {
+			if (StringUtils.hasText(database.postgresql().bootstrapDatabase())) {
+				bootstrap.put("database", database.postgresql().bootstrapDatabase());
+			}
+			if (StringUtils.hasText(database.postgresql().bootstrapOwner())) {
+				bootstrap.put("owner", database.postgresql().bootstrapOwner());
+			}
+		}
+		if (!bootstrap.isEmpty()) {
+			cluster.put("bootstrap", bootstrap);
+		}
+		Map<String, Object> resources = resourceBlock(database.resource());
+		if (!resources.isEmpty()) {
+			cluster.put("resources", resources);
+		}
+		if (database.monitoringEnabled() != null) {
+			cluster.put("monitoring", Map.of("enabled", database.monitoringEnabled()));
+		}
+		values.put("cluster", cluster);
+		Map<String, Object> storage = storage(database);
+		if (database.postgresql() != null && database.postgresql().walEnabled() != null) {
+			Map<String, Object> wal = new LinkedHashMap<>();
+			wal.put("enabled", database.postgresql().walEnabled());
+			if (StringUtils.hasText(database.postgresql().walSize())) {
+				wal.put("size", database.postgresql().walSize());
+			}
+			storage.put("wal", wal);
+		}
+		if (!storage.isEmpty()) {
+			values.put("storage", storage);
+		}
+		if (secrets != null && StringUtils.hasText(secrets.pgPassword())) {
+			values.put("credentials", Map.of(
+				"superuser", secrets.pgPassword(),
+				"admin", secrets.pgPassword()
+			));
+		}
 	}
 
-	private void renderRedis(Map<String, Object> root, RedisConfigRequest request) {
-		if (request == null) {
-			return;
+	private void renderMongo(Map<String, Object> values, DatabaseInstanceRequest database, DeploymentSecretsRequest secrets) {
+		Map<String, Object> cluster = new LinkedHashMap<>();
+		if (database.instances() != null && database.instances() > 0) {
+			cluster.put("instances", database.instances());
 		}
-		put(root, "redis.exporter.enabled", request.exporterEnabled());
+		Map<String, Object> resources = resourceBlock(database.resource());
+		if (!resources.isEmpty()) {
+			cluster.put("resources", resources);
+		}
+		values.put("cluster", cluster);
+		Map<String, Object> storage = storage(database);
+		if (!storage.isEmpty()) {
+			values.put("storage", storage);
+		}
+		if (database.mongo() != null && (database.mongo().replicaSetHorizonsEnabled() != null || database.mongo().replicaSetHorizonsBasePort() != null)) {
+			Map<String, Object> externalAccess = nestedMap(values, "externalAccess");
+			Map<String, Object> replicaSetHorizons = new LinkedHashMap<>();
+			if (database.mongo().replicaSetHorizonsEnabled() != null) {
+				replicaSetHorizons.put("enabled", database.mongo().replicaSetHorizonsEnabled());
+			}
+			if (database.mongo().replicaSetHorizonsBasePort() != null) {
+				replicaSetHorizons.put("basePort", database.mongo().replicaSetHorizonsBasePort());
+			}
+			externalAccess.put("replicaSetHorizons", replicaSetHorizons);
+		}
+		if (secrets != null && StringUtils.hasText(secrets.mongoPassword())) {
+			values.put("credentials", Map.of(
+				"clusterAdminPassword", secrets.mongoPassword(),
+				"userAdminPassword", secrets.mongoPassword(),
+				"clusterMonitorPassword", secrets.mongoPassword(),
+				"databaseAdminPassword", secrets.mongoPassword(),
+				"backupPassword", secrets.mongoPassword(),
+				"replicationKey", secrets.mongoPassword()
+			));
+		}
 	}
 
-	private void renderCassandra(Map<String, Object> root, CassandraConfigRequest request) {
-		if (request == null) {
-			return;
+	private void renderMysql(Map<String, Object> values, DatabaseInstanceRequest database, DeploymentSecretsRequest secrets) {
+		Map<String, Object> cluster = new LinkedHashMap<>();
+		if (database.instances() != null && database.instances() > 0) {
+			cluster.put("instances", database.instances());
 		}
-		put(root, "cassandra.cluster.config.clusterName", request.clusterName());
-		put(root, "cassandra.cluster.config.datacenter", request.datacenter());
-		put(root, "cassandra.tls.requireClientAuth", request.requireClientAuth());
+		Map<String, Object> resources = resourceBlock(database.resource());
+		if (!resources.isEmpty()) {
+			cluster.put("resources", resources);
+		}
+		Map<String, Object> storage = storage(database);
+		if (!storage.isEmpty()) {
+			values.put("storage", storage);
+		}
+		if (database.mysql() != null && database.mysql().haproxySize() != null) {
+			values.put("haproxy", Map.of("size", database.mysql().haproxySize()));
+		}
+		values.put("cluster", cluster);
+		if (secrets != null && StringUtils.hasText(secrets.mysqlPassword())) {
+			values.put("credentials", Map.of(
+				"rootPassword", secrets.mysqlPassword(),
+				"replicationPassword", secrets.mysqlPassword(),
+				"monitorPassword", secrets.mysqlPassword(),
+				"clusterCheckPassword", secrets.mysqlPassword()
+			));
+		}
+	}
+
+	private void renderRedis(Map<String, Object> values, DatabaseInstanceRequest database, DeploymentSecretsRequest secrets) {
+		Map<String, Object> cluster = new LinkedHashMap<>();
+		if (database.instances() != null && database.instances() > 0) {
+			cluster.put("instances", database.instances());
+		}
+		Map<String, Object> resources = resourceBlock(database.resource());
+		if (!resources.isEmpty()) {
+			cluster.put("resources", resources);
+		}
+		Map<String, Object> storage = storage(database);
+		if (!storage.isEmpty()) {
+			values.put("storage", storage);
+		}
+		if (database.monitoringEnabled() != null) {
+			values.put("exporter", Map.of("enabled", database.monitoringEnabled()));
+		}
+		values.put("cluster", cluster);
+		if (secrets != null && StringUtils.hasText(secrets.redisPassword())) {
+			values.put("auth", Map.of("password", secrets.redisPassword()));
+		}
+	}
+
+	private void renderCassandra(Map<String, Object> values, DatabaseInstanceRequest database, DeploymentSecretsRequest secrets) {
+		Map<String, Object> cluster = new LinkedHashMap<>();
+		if (database.instances() != null && database.instances() > 0) {
+			cluster.put("instances", database.instances());
+		}
+		Map<String, Object> config = new LinkedHashMap<>();
+		if (database.cassandra() != null) {
+			if (StringUtils.hasText(database.cassandra().clusterName())) {
+				config.put("clusterName", database.cassandra().clusterName());
+			}
+			if (StringUtils.hasText(database.cassandra().datacenter())) {
+				config.put("datacenter", database.cassandra().datacenter());
+			}
+			if (database.cassandra().requireClientAuth() != null) {
+				config.put("requireClientAuth", database.cassandra().requireClientAuth());
+			}
+		}
+		if (!config.isEmpty()) {
+			cluster.put("config", config);
+		}
+		Map<String, Object> resources = resourceBlock(database.resource());
+		if (!resources.isEmpty()) {
+			cluster.put("resources", resources);
+		}
+		Map<String, Object> storage = storage(database);
+		if (!storage.isEmpty()) {
+			values.put("storage", storage);
+		}
+		if (database.tlsEnabled() != null) {
+			Map<String, Object> tls = new LinkedHashMap<>();
+			tls.put("enabled", database.tlsEnabled());
+			tls.put("clientEncryption", database.tlsEnabled());
+			if (database.cassandra() != null && database.cassandra().requireClientAuth() != null) {
+				tls.put("requireClientAuth", database.cassandra().requireClientAuth());
+			}
+			values.put("tls", tls);
+		}
+		values.put("cluster", cluster);
+		if (secrets != null && StringUtils.hasText(secrets.cassandraPassword())) {
+			values.put("credentials", Map.of("password", secrets.cassandraPassword()));
+		}
+	}
+
+	private Map<String, Object> storage(DatabaseInstanceRequest database) {
+		Map<String, Object> storage = new LinkedHashMap<>();
+		if (StringUtils.hasText(database.storageSize())) {
+			storage.put("size", database.storageSize());
+		}
+		if (StringUtils.hasText(database.storageClass())) {
+			storage.put("storageClass", database.storageClass());
+		}
+		return storage;
+	}
+
+	private Map<String, Object> resourceBlock(DatabaseResourceRequest request) {
+		Map<String, Object> resources = new LinkedHashMap<>();
+		if (request == null) {
+			return resources;
+		}
+		Map<String, Object> requests = new LinkedHashMap<>();
+		if (StringUtils.hasText(request.cpuRequest())) {
+			requests.put("cpu", request.cpuRequest());
+		}
+		if (StringUtils.hasText(request.memRequest())) {
+			requests.put("memory", request.memRequest());
+		}
+		if (!requests.isEmpty()) {
+			resources.put("requests", requests);
+		}
+		Map<String, Object> limits = new LinkedHashMap<>();
+		if (StringUtils.hasText(request.cpuLimit())) {
+			limits.put("cpu", request.cpuLimit());
+		}
+		if (StringUtils.hasText(request.memLimit())) {
+			limits.put("memory", request.memLimit());
+		}
+		if (!limits.isEmpty()) {
+			resources.put("limits", limits);
+		}
+		return resources;
+	}
+
+	private boolean hasAnyPublicHostnames(DatabaseInstanceRequest database) {
+		return database.publicHostnames() != null && !database.publicHostnames().isEmpty();
 	}
 
 	@SuppressWarnings("unchecked")
-	private void put(Map<String, Object> root, String path, Object value) {
-		if (value == null) {
-			return;
-		}
-		if (value instanceof String text && !StringUtils.hasText(text)) {
-			return;
-		}
-		if (value instanceof List<?> list && list.isEmpty()) {
-			return;
-		}
-
-		String[] parts = path.split("\\.");
-		Map<String, Object> current = root;
-		for (int i = 0; i < parts.length - 1; i++) {
-			current = (Map<String, Object>) current.computeIfAbsent(parts[i], key -> new LinkedHashMap<String, Object>());
-		}
-		current.put(parts[parts.length - 1], value);
+	private Map<String, Object> nestedMap(Map<String, Object> values, String key) {
+		return (Map<String, Object>) values.computeIfAbsent(key, ignored -> new LinkedHashMap<String, Object>());
 	}
 
-	private Yaml yaml() {
-		DumperOptions options = new DumperOptions();
-		options.setPrettyFlow(true);
-		options.setDefaultFlowStyle(DumperOptions.FlowStyle.BLOCK);
-		options.setIndent(2);
-		return new Yaml(options);
+	private String databaseSection(DatabaseEngine engine) {
+		return switch (engine) {
+			case POSTGRESQL -> "postgresql";
+			case MONGODB -> "mongodb";
+			case MYSQL -> "mysql";
+			case REDIS -> "redis";
+			case CASSANDRA -> "cassandra";
+		};
+	}
+
+	private String secretKey(DatabaseEngine engine) {
+		return switch (engine) {
+			case POSTGRESQL -> "existingSecretName";
+			case MONGODB -> "sslSecretName";
+			case MYSQL -> "sslSecretName";
+			case REDIS -> "secretName";
+			case CASSANDRA -> "serverSecretName";
+		};
+	}
+
+	private String toChartTlsMode(TlsMode mode) {
+		return switch (mode) {
+			case DISABLED -> "disabled";
+			case OPERATOR -> "operator";
+			case CERT_MANAGER -> "certManager";
+			case EXISTING_SECRET -> "existingSecret";
+		};
 	}
 }

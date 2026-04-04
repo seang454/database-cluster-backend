@@ -1,11 +1,12 @@
 package com.example.demo.cluster.service;
 
 import java.util.List;
+import java.util.Map;
 
-import com.example.demo.cluster.config.ClusterOperationsProperties;
+import io.fabric8.kubernetes.api.model.GenericKubernetesResource;
+import io.fabric8.kubernetes.client.KubernetesClient;
 import com.example.demo.cluster.domain.enumtype.DatabaseEngine;
 import com.example.demo.cluster.exception.ClusterDeploymentException;
-import com.example.demo.cluster.model.CommandResult;
 import com.example.demo.cluster.model.DeploymentTarget;
 
 import org.springframework.stereotype.Service;
@@ -13,144 +14,86 @@ import org.springframework.stereotype.Service;
 @Service
 public class DeploymentReadinessService {
 
-	private final ClusterOperationsProperties properties;
-	private final CommandRunnerService commandRunnerService;
+	private static final String CNPG_API_VERSION = "postgresql.cnpg.io/v1";
+	private static final String CNPG_KIND = "Cluster";
+	private static final String PSMDB_API_VERSION = "psmdb.percona.com/v1";
+	private static final String PSMDB_KIND = "PerconaServerMongoDB";
+	private static final String PXC_API_VERSION = "pxc.percona.com/v1";
+	private static final String PXC_KIND = "PerconaXtraDBCluster";
+	private static final String REDIS_API_VERSION = "redis.redis.opstreelabs.in/v1beta1";
+	private static final String REDIS_KIND = "RedisCluster";
+	private static final String K8SSANDRA_API_VERSION = "k8ssandra.io/v1alpha1";
+	private static final String K8SSANDRA_KIND = "K8ssandraCluster";
 
-	public DeploymentReadinessService(
-		ClusterOperationsProperties properties,
-		CommandRunnerService commandRunnerService
-	) {
-		this.properties = properties;
-		this.commandRunnerService = commandRunnerService;
+	private final KubernetesClient client;
+
+	public DeploymentReadinessService(KubernetesClient client) {
+		this.client = client;
 	}
 
 	public void verifyDeployment(DeploymentTarget target, DatabaseEngine engine) {
-		waitForClusterSecretStore();
-		switch (engine) {
-			case POSTGRESQL -> verifyPostgresql(target);
-			case MONGODB -> verifyMongodb(target);
-			case MYSQL -> verifyMysql(target);
-			case REDIS -> verifyRedis(target);
-			case CASSANDRA -> verifyCassandra(target);
-		}
-	}
-
-	private void waitForClusterSecretStore() {
-		runRequired(List.of(
-			properties.getKubectlExecutable(),
-			"wait",
-			"--for=condition=Ready",
-			"clustersecretstore/vault-backend",
-			"--timeout=180s"
-		), "Vault ClusterSecretStore did not become Ready");
-	}
-
-	private void verifyPostgresql(DeploymentTarget target) {
-		waitExternalSecret(target.namespace(), target.releaseName() + "-postgresql-credentials", "PostgreSQL superuser ExternalSecret did not become Ready");
-		waitExternalSecret(target.namespace(), target.releaseName() + "-postgresql-app", "PostgreSQL app ExternalSecret did not become Ready");
-		waitForSecret(target.namespace(), target.releaseName() + "-postgresql-credentials", "PostgreSQL superuser secret was not created");
-		waitForSecret(target.namespace(), target.releaseName() + "-postgresql-app", "PostgreSQL app secret was not created");
-		waitForPodsReady(target.namespace(), "cnpg.io/cluster=" + target.releaseName() + "-postgresql", "PostgreSQL pods");
-	}
-
-	private void verifyMongodb(DeploymentTarget target) {
-		waitExternalSecret(target.namespace(), target.releaseName() + "-mongodb-credentials", "MongoDB ExternalSecret did not become Ready");
-		waitForSecret(target.namespace(), target.releaseName() + "-mongodb-credentials", "MongoDB credentials secret was not created");
-		waitForPodsReady(target.namespace(), "app.kubernetes.io/instance=" + target.releaseName() + "-mongodb,app.kubernetes.io/component=mongod", "MongoDB pods");
-	}
-
-	private void verifyMysql(DeploymentTarget target) {
-		waitExternalSecret(target.namespace(), target.releaseName() + "-mysql-credentials", "MySQL ExternalSecret did not become Ready");
-		waitForSecret(target.namespace(), target.releaseName() + "-mysql-credentials", "MySQL credentials secret was not created");
-	}
-
-	private void verifyRedis(DeploymentTarget target) {
-		waitExternalSecret(target.namespace(), target.releaseName() + "-redis-credentials", "Redis ExternalSecret did not become Ready");
-		waitForSecret(target.namespace(), target.releaseName() + "-redis-credentials", "Redis credentials secret was not created");
-	}
-
-	private void verifyCassandra(DeploymentTarget target) {
-		waitExternalSecret(target.namespace(), target.releaseName() + "-cassandra-credentials", "Cassandra ExternalSecret did not become Ready");
-		waitForSecret(target.namespace(), target.releaseName() + "-cassandra-credentials", "Cassandra credentials secret was not created");
-	}
-
-	private void waitExternalSecret(String namespace, String name, String failureMessage) {
-		runRequired(List.of(
-			properties.getKubectlExecutable(),
-			"wait",
-			"--for=condition=Ready",
-			"externalsecret/" + name,
-			"-n",
-			namespace,
-			"--timeout=180s"
-		), failureMessage);
+		KubernetesResourceDescriptor descriptor = descriptorFor(engine, target);
+		waitForSecret(target.namespace(), descriptor.secretName(), descriptor.kind() + " secret was not created");
+		waitForReady(descriptor, target.namespace(), descriptor.kind() + " did not become Ready");
 	}
 
 	private void waitForSecret(String namespace, String name, String failureMessage) {
-		for (int attempt = 0; attempt < 18; attempt++) {
-			CommandResult result = commandRunnerService.run(List.of(
-				properties.getKubectlExecutable(),
-				"get",
-				"secret",
-				name,
-				"-n",
-				namespace
-			));
-			if (result.successful()) {
+		for (int attempt = 0; attempt < 36; attempt++) {
+			if (client.secrets().inNamespace(namespace).withName(name).get() != null) {
 				return;
 			}
-			sleepSeconds(10);
+			sleepSeconds(5);
 		}
 		throw new ClusterDeploymentException(failureMessage);
 	}
 
-	private void waitForPodsReady(String namespace, String selector, String label) {
-		for (int attempt = 0; attempt < 60; attempt++) {
-			CommandResult total = commandRunnerService.run(List.of(
-				properties.getKubectlExecutable(),
-				"get",
-				"pods",
-				"-n",
-				namespace,
-				"-l",
-				selector,
-				"--no-headers"
-			));
-			if (!total.successful()) {
-				sleepSeconds(10);
-				continue;
-			}
-			String[] lines = total.stdout().lines().filter(line -> !line.isBlank()).toArray(String[]::new);
-			if (lines.length == 0) {
-				sleepSeconds(10);
-				continue;
-			}
-			boolean ready = true;
-			for (String line : lines) {
-				String[] parts = line.trim().split("\\s+");
-				if (parts.length < 2) {
-					ready = false;
-					break;
-				}
-				String[] ratio = parts[1].split("/");
-				if (ratio.length != 2 || !ratio[0].equals(ratio[1])) {
-					ready = false;
-					break;
-				}
-			}
-			if (ready) {
+	private void waitForReady(KubernetesResourceDescriptor descriptor, String namespace, String failureMessage) {
+		for (int attempt = 0; attempt < 36; attempt++) {
+			GenericKubernetesResource resource = client.genericKubernetesResources(descriptor.apiVersion(), descriptor.kind())
+				.inNamespace(namespace)
+				.withName(descriptor.resourceName())
+				.get();
+			if (isReady(resource)) {
 				return;
 			}
-			sleepSeconds(10);
+			sleepSeconds(5);
 		}
-		throw new ClusterDeploymentException(label + " did not become Ready");
+		throw new ClusterDeploymentException(failureMessage);
 	}
 
-	private void runRequired(List<String> command, String failureMessage) {
-		CommandResult result = commandRunnerService.run(command);
-		if (!result.successful()) {
-			throw new ClusterDeploymentException(failureMessage + System.lineSeparator() + result.stderr());
+	private KubernetesResourceDescriptor descriptorFor(DatabaseEngine engine, DeploymentTarget target) {
+		return switch (engine) {
+			case POSTGRESQL -> new KubernetesResourceDescriptor(CNPG_API_VERSION, CNPG_KIND, target.releaseName() + "-postgresql", target.releaseName() + "-postgresql-app");
+			case MONGODB -> new KubernetesResourceDescriptor(PSMDB_API_VERSION, PSMDB_KIND, target.releaseName() + "-mongodb", target.releaseName() + "-mongodb-credentials");
+			case MYSQL -> new KubernetesResourceDescriptor(PXC_API_VERSION, PXC_KIND, target.releaseName() + "-mysql", target.releaseName() + "-mysql-credentials");
+			case REDIS -> new KubernetesResourceDescriptor(REDIS_API_VERSION, REDIS_KIND, target.releaseName() + "-redis", target.releaseName() + "-redis-credentials");
+			case CASSANDRA -> new KubernetesResourceDescriptor(K8SSANDRA_API_VERSION, K8SSANDRA_KIND, target.releaseName() + "-cassandra", target.releaseName() + "-cassandra-credentials");
+		};
+	}
+
+	private boolean isReady(GenericKubernetesResource resource) {
+		if (resource == null || resource.getAdditionalProperties() == null) {
+			return false;
 		}
+		Object statusObject = resource.getAdditionalProperties().get("status");
+		if (!(statusObject instanceof Map<?, ?> status)) {
+			return false;
+		}
+		Object conditionsObject = status.get("conditions");
+		if (!(conditionsObject instanceof List<?> conditions)) {
+			return false;
+		}
+		for (Object conditionObject : conditions) {
+			if (!(conditionObject instanceof Map<?, ?> condition)) {
+				continue;
+			}
+			String type = String.valueOf(condition.get("type"));
+			String state = String.valueOf(condition.get("status"));
+			if ("Ready".equalsIgnoreCase(type) && "True".equalsIgnoreCase(state)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private void sleepSeconds(long seconds) {
@@ -161,5 +104,13 @@ public class DeploymentReadinessService {
 			Thread.currentThread().interrupt();
 			throw new ClusterDeploymentException("Readiness check was interrupted", exception);
 		}
+	}
+
+	private record KubernetesResourceDescriptor(
+		String apiVersion,
+		String kind,
+		String resourceName,
+		String secretName
+	) {
 	}
 }

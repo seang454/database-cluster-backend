@@ -16,7 +16,7 @@ import com.example.demo.cluster.mapper.ClusterResponseMapper;
 import com.example.demo.cluster.model.ClusterConfigResponse;
 import com.example.demo.cluster.model.DeploymentRecordResponse;
 import com.example.demo.cluster.model.DeploymentTarget;
-import com.example.demo.cluster.model.HelmReleaseResult;
+import com.example.demo.cluster.model.KubernetesDeploymentResult;
 import com.example.demo.cluster.repository.ClusterRepository;
 import com.example.demo.cluster.repository.DeploymentRecordRepository;
 
@@ -31,9 +31,8 @@ public class ClusterService {
 	private final ClusterPersistenceMapper persistenceMapper;
 	private final ClusterResponseMapper responseMapper;
 	private final DeploymentNamingService namingService;
-	private final OperatorInstallerService operatorInstallerService;
 	private final DeploymentReadinessService deploymentReadinessService;
-	private final HelmReleaseService helmReleaseService;
+	private final KubernetesDeploymentService kubernetesDeploymentService;
 
 	public ClusterService(
 		ClusterRepository clusterRepository,
@@ -41,33 +40,22 @@ public class ClusterService {
 		ClusterPersistenceMapper persistenceMapper,
 		ClusterResponseMapper responseMapper,
 		DeploymentNamingService namingService,
-		OperatorInstallerService operatorInstallerService,
 		DeploymentReadinessService deploymentReadinessService,
-		HelmReleaseService helmReleaseService
+		KubernetesDeploymentService kubernetesDeploymentService
 	) {
 		this.clusterRepository = clusterRepository;
 		this.deploymentRecordRepository = deploymentRecordRepository;
 		this.persistenceMapper = persistenceMapper;
 		this.responseMapper = responseMapper;
 		this.namingService = namingService;
-		this.operatorInstallerService = operatorInstallerService;
 		this.deploymentReadinessService = deploymentReadinessService;
-		this.helmReleaseService = helmReleaseService;
+		this.kubernetesDeploymentService = kubernetesDeploymentService;
 	}
 
-	@Transactional
-	public ClusterConfigResponse saveClusterConfig(ClusterDeploymentRequest request) {
-		Cluster cluster = persistenceMapper.toCluster(request);
-		Cluster saved = clusterRepository.save(cluster);
-		DatabaseInstance database = saved.getDatabaseInstances().stream().findFirst()
-			.orElseThrow(() -> new ClusterDeploymentException("Database configuration is required"));
-		return responseMapper.toConfigResponse(saved, database, namingService.resolve(request));
-	}
-
-	public HelmReleaseResult saveAndDeploy(ClusterDeploymentRequest request) {
+	public KubernetesDeploymentResult saveAndDeploy(ClusterDeploymentRequest request) {
 		Cluster cluster = persistenceMapper.toCluster(request);
 		DeploymentTarget target = namingService.resolve(request);
-		cluster.setHelmReleaseName(target.releaseName());
+		cluster.setDeploymentName(target.releaseName());
 		Cluster saved = clusterRepository.save(cluster);
 
 		DeploymentRecord record = createRecord(saved, request.database(), target);
@@ -76,8 +64,7 @@ public class ClusterService {
 		deploymentRecordRepository.save(record);
 
 		try {
-			operatorInstallerService.prepareForDeployment(request, target);
-			HelmReleaseResult result = helmReleaseService.deploy(request);
+			KubernetesDeploymentResult result = kubernetesDeploymentService.deploy(request);
 			record.setExitCode(result.exitCode());
 			record.setValuesFile(result.valuesFile());
 			record.setCommandText(String.join(" ", result.command()));
@@ -115,7 +102,7 @@ public class ClusterService {
 			.map(cluster -> responseMapper.toConfigResponse(
 				cluster,
 				cluster.getDatabaseInstances().stream().findFirst().orElse(null),
-				new DeploymentTarget(cluster.getHelmReleaseName(), responseMapper.defaultNamespace(cluster))))
+				new DeploymentTarget(cluster.getDeploymentName(), responseMapper.defaultNamespace(cluster))))
 			.toList();
 	}
 
@@ -127,7 +114,7 @@ public class ClusterService {
 		return responseMapper.toConfigResponse(
 			cluster,
 			database,
-			new DeploymentTarget(cluster.getHelmReleaseName(), responseMapper.defaultNamespace(cluster))
+			new DeploymentTarget(cluster.getDeploymentName(), responseMapper.defaultNamespace(cluster))
 		);
 	}
 
@@ -136,6 +123,22 @@ public class ClusterService {
 		return deploymentRecordRepository.findByClusterIdOrderByCreatedAtDesc(clusterId).stream()
 			.map(responseMapper::toRecordResponse)
 			.toList();
+	}
+
+	public KubernetesDeploymentResult uninstallDeployment(String releaseName, String namespace) {
+		KubernetesDeploymentResult result = kubernetesDeploymentService.uninstall(releaseName, namespace);
+		deploymentRecordRepository.findByReleaseNameAndNamespaceOrderByCreatedAtDesc(releaseName, namespace).stream()
+			.findFirst()
+			.ifPresent(record -> {
+				record.setExitCode(result.exitCode());
+				record.setCommandText(String.join(" ", result.command()));
+				record.setStdout(result.stdout());
+				record.setStderr(result.stderr());
+				record.setFinishedAt(OffsetDateTime.ofInstant(result.finishedAt(), ZoneOffset.UTC));
+				record.setStatus(result.successful() ? DeploymentStatus.UNINSTALLED : DeploymentStatus.FAILED);
+				deploymentRecordRepository.save(record);
+			});
+		return result;
 	}
 
 	private DeploymentRecord createRecord(

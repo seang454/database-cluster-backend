@@ -1,10 +1,14 @@
 package com.example.demo.cluster.service;
 
-import java.util.List;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.Map;
 
-import com.example.demo.cluster.config.ClusterOperationsProperties;
+import io.fabric8.kubernetes.api.model.NamespaceBuilder;
+import io.fabric8.kubernetes.api.model.Secret;
+import io.fabric8.kubernetes.api.model.SecretBuilder;
+import io.fabric8.kubernetes.client.KubernetesClient;
 import com.example.demo.cluster.exception.ClusterDeploymentException;
-import com.example.demo.cluster.model.CommandResult;
 import com.example.demo.cluster.model.DeploymentTarget;
 
 import org.springframework.stereotype.Service;
@@ -13,63 +17,45 @@ import org.springframework.util.StringUtils;
 @Service
 public class KubernetesSecretService {
 
-	private final ClusterOperationsProperties properties;
-	private final CommandRunnerService commandRunnerService;
+	private static final String CLOUDFLARE_SECRET_NAME = "cloudflare-api-token";
 
-	public KubernetesSecretService(
-		ClusterOperationsProperties properties,
-		CommandRunnerService commandRunnerService
-	) {
-		this.properties = properties;
-		this.commandRunnerService = commandRunnerService;
+	private final KubernetesClient client;
+
+	public KubernetesSecretService(KubernetesClient client) {
+		this.client = client;
 	}
 
 	public void ensureCloudflareSecretIfPresent(DeploymentTarget target, String apiToken) {
 		if (!StringUtils.hasText(apiToken)) {
 			return;
 		}
-		runRequired(List.of(
-			properties.getKubectlExecutable(),
-			"create",
-			"namespace",
-			target.namespace()
-		), "Failed to create namespace " + target.namespace());
-
-		CommandResult manifest = commandRunnerService.run(List.of(
-			properties.getKubectlExecutable(),
-			"create",
-			"secret",
-			"generic",
-			"cloudflare-api-token",
-			"--from-literal=token=" + apiToken,
-			"--namespace",
-			target.namespace(),
-			"--dry-run=client",
-			"-o",
-			"yaml"
-		));
-		if (!manifest.successful()) {
-			throw new ClusterDeploymentException("Failed to build Cloudflare secret manifest: " + manifest.stderr());
+		ensureNamespace(target.namespace());
+		Secret secret = new SecretBuilder()
+			.withNewMetadata()
+			.withName(CLOUDFLARE_SECRET_NAME)
+			.withNamespace(target.namespace())
+			.endMetadata()
+			.withType("Opaque")
+			.withData(Map.of("token", Base64.getEncoder().encodeToString(apiToken.getBytes(StandardCharsets.UTF_8))))
+			.build();
+		try {
+			client.secrets().inNamespace(target.namespace()).resource(secret).serverSideApply();
 		}
-
-		CommandResult apply = commandRunnerService.run(
-			List.of(properties.getKubectlExecutable(), "apply", "-f", "-"),
-			null,
-			manifest.stdout()
-		);
-		if (!apply.successful()) {
-			throw new ClusterDeploymentException("Failed to apply Cloudflare secret: " + apply.stderr());
+		catch (RuntimeException exception) {
+			throw new ClusterDeploymentException("Failed to apply Cloudflare secret", exception);
 		}
 	}
 
-	private void runRequired(List<String> command, String message) {
-		CommandResult result = commandRunnerService.run(command);
-		if (!result.successful() && !alreadyExists(result.stderr())) {
-			throw new ClusterDeploymentException(message + ": " + result.stderr());
+	private void ensureNamespace(String namespace) {
+		try {
+			client.resource(new NamespaceBuilder()
+				.withNewMetadata()
+				.withName(namespace)
+				.endMetadata()
+				.build()).serverSideApply();
 		}
-	}
-
-	private boolean alreadyExists(String stderr) {
-		return stderr != null && stderr.contains("AlreadyExists");
+		catch (RuntimeException exception) {
+			throw new ClusterDeploymentException("Failed to create namespace " + namespace, exception);
+		}
 	}
 }

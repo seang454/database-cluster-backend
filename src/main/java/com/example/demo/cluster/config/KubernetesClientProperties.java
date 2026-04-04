@@ -10,10 +10,11 @@ public class KubernetesClientProperties {
 
 	private Mode mode = Mode.AUTO;
 	private Path kubeconfigPath;
-	private String defaultNamespace = "default";
+	private String masterUrl;
 	private Duration connectTimeout = Duration.ofSeconds(10);
 	private Duration readTimeout = Duration.ofSeconds(30);
-	private Duration writeTimeout = Duration.ofSeconds(30);
+	private boolean trustCertificates;
+	private boolean disableHostnameVerification;
 
 	public Mode getMode() {
 		return mode;
@@ -31,12 +32,12 @@ public class KubernetesClientProperties {
 		this.kubeconfigPath = kubeconfigPath;
 	}
 
-	public String getDefaultNamespace() {
-		return defaultNamespace;
+	public String getMasterUrl() {
+		return masterUrl;
 	}
 
-	public void setDefaultNamespace(String defaultNamespace) {
-		this.defaultNamespace = defaultNamespace;
+	public void setMasterUrl(String masterUrl) {
+		this.masterUrl = masterUrl;
 	}
 
 	public Duration getConnectTimeout() {
@@ -55,12 +56,20 @@ public class KubernetesClientProperties {
 		this.readTimeout = readTimeout;
 	}
 
-	public Duration getWriteTimeout() {
-		return writeTimeout;
+	public boolean isTrustCertificates() {
+		return trustCertificates;
 	}
 
-	public void setWriteTimeout(Duration writeTimeout) {
-		this.writeTimeout = writeTimeout;
+	public void setTrustCertificates(boolean trustCertificates) {
+		this.trustCertificates = trustCertificates;
+	}
+
+	public boolean isDisableHostnameVerification() {
+		return disableHostnameVerification;
+	}
+
+	public void setDisableHostnameVerification(boolean disableHostnameVerification) {
+		this.disableHostnameVerification = disableHostnameVerification;
 	}
 
 	public enum Mode {

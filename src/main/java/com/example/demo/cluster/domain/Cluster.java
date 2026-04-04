@@ -40,8 +40,8 @@ public class Cluster extends BaseEntity {
 	@Column(name = "external_ip", length = 50)
 	private String externalIp;
 
-	@Column(name = "helm_release_name", length = 100)
-	private String helmReleaseName;
+	@Column(name = "deployment_name", length = 100)
+	private String deploymentName;
 
 	@Embedded
 	private ClusterPlatformConfig platformConfig = new ClusterPlatformConfig();

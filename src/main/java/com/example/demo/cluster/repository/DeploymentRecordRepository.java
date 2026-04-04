@@ -10,4 +10,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface DeploymentRecordRepository extends JpaRepository<DeploymentRecord, UUID> {
 
 	List<DeploymentRecord> findByClusterIdOrderByCreatedAtDesc(UUID clusterId);
+
+	List<DeploymentRecord> findByReleaseNameAndNamespaceOrderByCreatedAtDesc(String releaseName, String namespace);
 }

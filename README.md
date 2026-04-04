@@ -1,13 +1,11 @@
 # DB Cluster Deployment Backend
 
-Spring Boot backend for deploying one database cluster at a time into Kubernetes by using Helm, `kubectl`, and Spring Data JPA.
+Spring Boot backend for deploying one database cluster at a time into Kubernetes by using your Helm chart, Spring Data JPA, and Fabric8 for cluster checks.
 
 This project is not the Kubernetes platform bootstrap itself. It is the application layer that:
 
 - stores deployment configuration in PostgreSQL
-- generates Helm override values
-- installs required operators for the selected database engine
-- deploys the chart from an OCI registry
+- renders Helm values, installs the chart, and still uses the Kubernetes API for readiness checks and deploy-time secrets
 - waits for post-deploy readiness
 - records deployment history
 
@@ -25,39 +23,40 @@ Current supported engines:
 
 Current deployment flow:
 
-1. Save cluster config in PostgreSQL
-2. Create a deployment record with status `PENDING`
-3. Mark deployment as `INSTALLING`
-4. Ensure Helm repos and required operator are installed
-5. Create Cloudflare token secret if provided
-6. Deploy the Helm chart from Harbor OCI
-7. Wait for readiness checks
-8. Mark deployment as `DEPLOYED` or `FAILED`
+1. Save cluster config in PostgreSQL.
+2. Create a deployment record with status `PENDING`.
+3. Mark deployment as `INSTALLING`.
+4. Load the chart defaults file and render request overrides.
+5. Create the Cloudflare token secret if provided.
+6. Render database passwords into the Helm override file so Helm owns the chart-created secrets.
+7. Run `helm upgrade --install` against your chart.
+8. Wait for readiness checks through the Kubernetes API.
+9. Mark deployment as `DEPLOYED` or `FAILED`.
 
 ## What This Project Does Not Bootstrap
 
 These are still expected to exist already, or be managed separately by admin/bootstrap scripts:
 
 - Longhorn
-- Vault transit bootstrap
-- main Vault install/init
+- Vault and Vault transit
+- required database operators
 - full destructive teardown of the whole platform
 
 The backend assumes the platform is already prepared enough for per-cluster deploys.
+The backend also assumes the database chart owns its own per-engine Secrets. Spring only creates the optional Cloudflare API token Secret.
 
 ## Tech Stack
 
 - Java 21
 - Spring Boot 4
 - Spring Data JPA
+- Fabric8 Kubernetes Client
 - PostgreSQL
 - Gradle
-- Helm
-- kubectl
 
 ## Configuration
 
-Main config lives in [application.properties](D:\CSTADPreUniversityTraining\ITP\spring\db-cluster\demo\src\main\resources\application.properties).
+Main config lives in [src/main/resources/application.properties](D:\CSTADPreUniversityTraining\ITP\spring\db-cluster\demo\src\main\resources\application.properties).
 
 ### Database
 
@@ -69,45 +68,13 @@ spring.datasource.username=${APP_DATASOURCE_USERNAME:postgres}
 spring.datasource.password=${APP_DATASOURCE_PASSWORD:seang0405}
 ```
 
-### Helm Chart Source
+### Kubernetes Access
 
-The chart is deployed from Harbor OCI:
-
-```properties
-cluster.deployment.helm-executable=${HELM_EXECUTABLE:helm}
-cluster.deployment.chart-reference=${CLUSTER_CHART_REFERENCE:oci://harbor.devith.it.com/db-cluster/db-cluster}
-cluster.deployment.chart-version=${CLUSTER_CHART_VERSION:4.0.0}
-cluster.deployment.default-values-file=${CLUSTER_DEFAULT_VALUES_FILE:D:/CSTADPreUniversityTraining/ITP/iacfinal/db-cluster-autounseal/db-cluster-autounseal/db-cluster/values.yaml}
-```
-
-Before deploying, the machine running Spring must already be logged in to Harbor:
-
-```bash
-helm registry login harbor.devith.it.com
-```
-
-### Operator and kubectl Settings
-
-These properties control deploy-time operator installation and readiness checks:
+Spring talks to Kubernetes through the Fabric8 client for health/readiness checks. Point it at your Windows kubeconfig if needed:
 
 ```properties
-cluster.operations.kubectl-executable=${KUBECTL_EXECUTABLE:kubectl}
-cluster.operations.external-secrets-namespace=${CLUSTER_EXTERNAL_SECRETS_NAMESPACE:external-secrets}
-cluster.operations.external-secrets-release-name=${CLUSTER_EXTERNAL_SECRETS_RELEASE_NAME:external-secrets}
-cluster.operations.cnpg-namespace=${CLUSTER_CNPG_NAMESPACE:cnpg-system}
-cluster.operations.cnpg-release-name=${CLUSTER_CNPG_RELEASE_NAME:cnpg}
-cluster.operations.psmdb-release-name=${CLUSTER_PSMDB_RELEASE_NAME:psmdb-operator}
-cluster.operations.pxc-release-name=${CLUSTER_PXC_RELEASE_NAME:pxc-operator}
-cluster.operations.redis-operator-release-name=${CLUSTER_REDIS_OPERATOR_RELEASE_NAME:redis-operator}
-cluster.operations.k8ssandra-release-name=${CLUSTER_K8SSANDRA_RELEASE_NAME:k8ssandra-operator}
-cluster.operations.cert-manager-namespace=${CLUSTER_CERT_MANAGER_NAMESPACE:cert-manager}
-cluster.operations.cert-manager-release-name=${CLUSTER_CERT_MANAGER_RELEASE_NAME:cert-manager}
-cluster.operations.cnpg-version=${CLUSTER_CNPG_VERSION:0.21.0}
-cluster.operations.psmdb-version=${CLUSTER_PSMDB_VERSION:1.15.0}
-cluster.operations.pxc-version=${CLUSTER_PXC_VERSION:1.14.0}
-cluster.operations.redis-operator-version=${CLUSTER_REDIS_OPERATOR_VERSION:0.24.0}
-cluster.operations.k8ssandra-version=${CLUSTER_K8SSANDRA_VERSION:1.14.0}
-cluster.operations.cert-manager-version=${CLUSTER_CERT_MANAGER_VERSION:v1.15.3}
+kubernetes.client.mode=AUTO
+kubernetes.client.kubeconfig-path=C:/Users/your-user/.kube/config
 ```
 
 ## How Spring Uses the Config
@@ -117,27 +84,20 @@ The project uses `@ConfigurationProperties`, not `@Value`, for grouped config.
 Examples:
 
 - [ClusterDeploymentProperties.java](D:\CSTADPreUniversityTraining\ITP\spring\db-cluster\demo\src\main\java\com\example\demo\cluster\config\ClusterDeploymentProperties.java)
-- [ClusterOperationsProperties.java](D:\CSTADPreUniversityTraining\ITP\spring\db-cluster\demo\src\main\java\com\example\demo\cluster\config\ClusterOperationsProperties.java)
-- [KubernetesClientProperties.java](D:\CSTADPreUniversityTraining\ITP\spring\db-cluster\demo\src\main\java\com\example\demo\cluster\config\KubernetesClientProperties.java)
 
 Spring binds property names like:
 
-- `helm-executable` -> `helmExecutable`
-- `chart-reference` -> `chartReference`
-- `redis-operator-version` -> `redisOperatorVersion`
+- `default-release-prefix` -> `defaultReleasePrefix`
+- `default-namespace-prefix` -> `defaultNamespacePrefix`
 
 ## Main Services
 
 - [ClusterService.java](D:\CSTADPreUniversityTraining\ITP\spring\db-cluster\demo\src\main\java\com\example\demo\cluster\service\ClusterService.java)
   - orchestration, persistence, deployment record handling
-- [HelmReleaseService.java](D:\CSTADPreUniversityTraining\ITP\spring\db-cluster\demo\src\main\java\com\example\demo\cluster\service\HelmReleaseService.java)
-  - runs Helm install/status/uninstall
-- [HelmValuesService.java](D:\CSTADPreUniversityTraining\ITP\spring\db-cluster\demo\src\main\java\com\example\demo\cluster\service\HelmValuesService.java)
-  - generates override `values.yaml`
-- [OperatorInstallerService.java](D:\CSTADPreUniversityTraining\ITP\spring\db-cluster\demo\src\main\java\com\example\demo\cluster\service\OperatorInstallerService.java)
-  - installs required operator before deployment
+- [KubernetesDeploymentService.java](D:\CSTADPreUniversityTraining\ITP\spring\db-cluster\demo\src\main\java\com\example\demo\cluster\service\KubernetesDeploymentService.java)
+  - renders Helm overrides, runs the chart install/upgrade, and handles uninstall/status
 - [DeploymentReadinessService.java](D:\CSTADPreUniversityTraining\ITP\spring\db-cluster\demo\src\main\java\com\example\demo\cluster\service\DeploymentReadinessService.java)
-  - waits for secrets and workloads to be ready
+  - waits for Kubernetes custom resources to become ready
 - [KubernetesSecretService.java](D:\CSTADPreUniversityTraining\ITP\spring\db-cluster\demo\src\main\java\com\example\demo\cluster\service\KubernetesSecretService.java)
   - creates deploy-time Kubernetes secrets such as Cloudflare token
 
@@ -155,12 +115,6 @@ Core entities:
 Repositories are under [cluster/repository](D:\CSTADPreUniversityTraining\ITP\spring\db-cluster\demo\src\main\java\com\example\demo\cluster\repository).
 
 ## API Endpoints
-
-### Save cluster config only
-
-```http
-POST /api/clusters
-```
 
 ### List saved clusters
 
@@ -186,13 +140,13 @@ GET /api/clusters/{id}/deployments
 POST /api/cluster-deployments
 ```
 
-### Get Helm release status
+### Get deployment status
 
 ```http
 GET /api/cluster-deployments/{releaseName}?namespace={namespace}
 ```
 
-### Uninstall Helm release
+### Uninstall deployment
 
 ```http
 DELETE /api/cluster-deployments/{releaseName}?namespace={namespace}
@@ -200,20 +154,15 @@ DELETE /api/cluster-deployments/{releaseName}?namespace={namespace}
 
 ## Example Deployment Request
 
+Use the reusable sample file at [api-test-request.json](D:\CSTADPreUniversityTraining\ITP\spring\db-cluster\demo\api-test-request.json) for the first API test.
+Optional cluster fields like `environment`, `domain`, `externalIp`, and `platformConfig` can be omitted if you want the chart defaults to handle them.
+
 ```json
 {
   "releaseName": "db-seang-postgres",
   "namespace": "ns-seang-postgres",
   "cluster": {
-    "name": "seang-postgres",
-    "environment": "DEVELOPMENT",
-    "domain": "seang.shop",
-    "externalIp": "35.194.146.154",
-    "platformConfig": {
-      "cloudflareEnabled": true,
-      "cloudflareZoneName": "seang.shop",
-      "vaultEnabled": true
-    }
+    "name": "seang-postgres"
   },
   "database": {
     "engine": "POSTGRESQL",
@@ -264,10 +213,8 @@ Deployment records currently use:
 
 `DEPLOYED` now means:
 
-- Helm install succeeded
-- required readiness checks passed
-
-It is no longer just “Helm exit code was 0”.
+- Helm installed or upgraded the chart successfully
+- required readiness checks passed through the Kubernetes API
 
 ## Run Locally
 
@@ -293,5 +240,8 @@ Run tests:
 
 - This backend deploys one database cluster per request.
 - One release should map to one namespace for cleaner isolation.
-- The local default values file is still required even when the chart comes from OCI.
-- If operator versions or namespaces change in the cluster, update `cluster.operations.*`.
+- Set `CLUSTER_DEPLOYMENT_CHART_PATH` to your chart directory, packaged `.tgz`, or OCI reference.
+- Set `CLUSTER_DEPLOYMENT_DEFAULTS_FILE` to your chart's `values.yaml`.
+- Set `CLUSTER_DEPLOYMENT_HELM_EXECUTABLE` if `helm` is not on PATH.
+- The Kubernetes cluster must already have the required operators and storage installed if your chart expects them separately.
+- Do not pre-create database Secrets with the same names the chart renders, or Helm will reject the install because it cannot adopt resources owned by something else.

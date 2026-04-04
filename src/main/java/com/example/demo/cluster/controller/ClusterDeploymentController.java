@@ -1,9 +1,9 @@
 package com.example.demo.cluster.controller;
 
 import com.example.demo.cluster.dto.ClusterDeploymentRequest;
-import com.example.demo.cluster.model.HelmReleaseResult;
+import com.example.demo.cluster.model.KubernetesDeploymentResult;
 import com.example.demo.cluster.service.ClusterService;
-import com.example.demo.cluster.service.HelmReleaseService;
+import com.example.demo.cluster.service.KubernetesDeploymentService;
 
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -18,32 +18,32 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/cluster-deployments")
 public class ClusterDeploymentController {
 
-	private final HelmReleaseService helmReleaseService;
+	private final KubernetesDeploymentService kubernetesDeploymentService;
 	private final ClusterService clusterService;
 
-	public ClusterDeploymentController(HelmReleaseService helmReleaseService, ClusterService clusterService) {
-		this.helmReleaseService = helmReleaseService;
+	public ClusterDeploymentController(KubernetesDeploymentService kubernetesDeploymentService, ClusterService clusterService) {
+		this.kubernetesDeploymentService = kubernetesDeploymentService;
 		this.clusterService = clusterService;
 	}
 
 	@PostMapping
-	public HelmReleaseResult deploy(@RequestBody ClusterDeploymentRequest request) {
+	public KubernetesDeploymentResult deploy(@RequestBody ClusterDeploymentRequest request) {
 		return clusterService.saveAndDeploy(request);
 	}
 
 	@GetMapping("/{releaseName}")
-	public HelmReleaseResult status(
+	public KubernetesDeploymentResult status(
 		@PathVariable String releaseName,
 		@RequestParam String namespace
 	) {
-		return helmReleaseService.status(releaseName, namespace);
+		return kubernetesDeploymentService.status(releaseName, namespace);
 	}
 
 	@DeleteMapping("/{releaseName}")
-	public HelmReleaseResult uninstall(
+	public KubernetesDeploymentResult uninstall(
 		@PathVariable String releaseName,
 		@RequestParam String namespace
 	) {
-		return helmReleaseService.uninstall(releaseName, namespace);
+		return clusterService.uninstallDeployment(releaseName, namespace);
 	}
 }

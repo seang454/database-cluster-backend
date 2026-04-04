@@ -46,7 +46,7 @@ public class ClusterPersistenceMapper {
 		cluster.setEnvironment(request.environment());
 		cluster.setDomain(request.domain());
 		cluster.setExternalIp(request.externalIp());
-		cluster.setHelmReleaseName(request.helmReleaseName());
+		cluster.setDeploymentName(request.deploymentName());
 		cluster.setNotes(request.notes());
 		cluster.setPlatformConfig(toPlatformConfig(request.platformConfig()));
 	}

@@ -7,7 +7,7 @@ public record ClusterRequest(
 	ClusterEnvironment environment,
 	String domain,
 	String externalIp,
-	String helmReleaseName,
+	String deploymentName,
 	ClusterPlatformConfigRequest platformConfig,
 	String notes
 ) {
