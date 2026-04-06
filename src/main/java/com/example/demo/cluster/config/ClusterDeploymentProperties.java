@@ -11,6 +11,7 @@ public class ClusterDeploymentProperties {
 	private String chartPath;
 	private String chartVersion;
 	private String helmExecutable = "helm";
+	private String defaultCloudflareApiToken;
 
 	public String getDefaultReleasePrefix() {
 		return defaultReleasePrefix;
@@ -58,5 +59,13 @@ public class ClusterDeploymentProperties {
 
 	public void setHelmExecutable(String helmExecutable) {
 		this.helmExecutable = helmExecutable;
+	}
+
+	public String getDefaultCloudflareApiToken() {
+		return defaultCloudflareApiToken;
+	}
+
+	public void setDefaultCloudflareApiToken(String defaultCloudflareApiToken) {
+		this.defaultCloudflareApiToken = defaultCloudflareApiToken;
 	}
 }

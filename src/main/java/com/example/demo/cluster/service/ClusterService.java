@@ -53,6 +53,7 @@ public class ClusterService {
 	}
 
 	public KubernetesDeploymentResult saveAndDeploy(ClusterDeploymentRequest request) {
+		validateRequest(request);
 		Cluster cluster = persistenceMapper.toCluster(request);
 		DeploymentTarget target = namingService.resolve(request);
 		cluster.setDeploymentName(target.releaseName());
@@ -60,6 +61,10 @@ public class ClusterService {
 
 		DeploymentRecord record = createRecord(saved, request.database(), target);
 		deploymentRecordRepository.save(record);
+		if (request.database() != null && Boolean.FALSE.equals(request.database().enabled())) {
+			return uninstallFromDisabledRequest(target, record);
+		}
+
 		record.setStatus(DeploymentStatus.INSTALLING);
 		deploymentRecordRepository.save(record);
 
@@ -84,6 +89,43 @@ public class ClusterService {
 				.orElseThrow(() -> new ClusterDeploymentException("Saved cluster has no database instance"));
 			database.setLastDeployedAt(record.getFinishedAt());
 			clusterRepository.save(saved);
+			deploymentRecordRepository.save(record);
+			return result;
+		}
+		catch (RuntimeException exception) {
+			record.setStatus(DeploymentStatus.FAILED);
+			record.setFinishedAt(OffsetDateTime.now(ZoneOffset.UTC));
+			record.setStderr(exception.getMessage());
+			deploymentRecordRepository.save(record);
+			throw exception;
+		}
+	}
+
+	private void validateRequest(ClusterDeploymentRequest request) {
+		if (request == null) {
+			throw new ClusterDeploymentException("Deployment request is required");
+		}
+		if (request.database() == null || request.database().engine() == null) {
+			throw new ClusterDeploymentException("A single database configuration is required");
+		}
+		boolean hasClusterName = request.cluster() != null
+			&& org.springframework.util.StringUtils.hasText(request.cluster().name());
+		boolean hasExplicitTarget = org.springframework.util.StringUtils.hasText(request.releaseName())
+			&& org.springframework.util.StringUtils.hasText(request.namespace());
+		if (!hasClusterName && !hasExplicitTarget) {
+			throw new ClusterDeploymentException("Cluster name is required when release name or namespace is missing");
+		}
+	}
+
+	private KubernetesDeploymentResult uninstallFromDisabledRequest(DeploymentTarget target, DeploymentRecord record) {
+		try {
+			KubernetesDeploymentResult result = kubernetesDeploymentService.uninstall(target.releaseName(), target.namespace());
+			record.setExitCode(result.exitCode());
+			record.setCommandText(String.join(" ", result.command()));
+			record.setStdout(result.stdout());
+			record.setStderr(result.stderr());
+			record.setFinishedAt(OffsetDateTime.ofInstant(result.finishedAt(), ZoneOffset.UTC));
+			record.setStatus(result.successful() ? DeploymentStatus.UNINSTALLED : DeploymentStatus.FAILED);
 			deploymentRecordRepository.save(record);
 			return result;
 		}

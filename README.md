@@ -152,6 +152,84 @@ GET /api/cluster-deployments/{releaseName}?namespace={namespace}
 DELETE /api/cluster-deployments/{releaseName}?namespace={namespace}
 ```
 
+### List pods in a namespace
+
+```http
+GET /api/kubernetes/namespaces/{namespace}/pods
+```
+
+### Namespace overview
+
+```http
+GET /api/kubernetes/namespaces/{namespace}/overview
+```
+
+### List database custom resources
+
+```http
+GET /api/kubernetes/namespaces/{namespace}/database-resources
+```
+
+### List events
+
+```http
+GET /api/kubernetes/namespaces/{namespace}/events?warningsOnly=false&limit=50
+```
+
+### List services
+
+```http
+GET /api/kubernetes/namespaces/{namespace}/services
+```
+
+### List persistent volume claims
+
+```http
+GET /api/kubernetes/namespaces/{namespace}/persistent-volume-claims
+```
+
+### Stream pod logs in real time
+
+```http
+GET /api/kubernetes/namespaces/{namespace}/pods/{podName}/logs/stream?tailLines=100
+```
+
+Optional query parameter:
+
+- `container`
+
+For a local Next.js app, the backend already allows browser access from `http://localhost:3000` by default.
+If your frontend runs on a different origin, update `frontend.cors.allowed-origins` in [application.properties](D:\CSTADPreUniversityTraining\ITP\spring\db-cluster\demo\src\main\resources\application.properties).
+
+Example client code in Next.js:
+
+```ts
+const url = new URL(
+  `http://localhost:8080/api/kubernetes/namespaces/${namespace}/pods/${podName}/logs/stream`
+);
+url.searchParams.set("tailLines", "100");
+
+const eventSource = new EventSource(url);
+
+eventSource.addEventListener("log", (event) => {
+  console.log("pod log:", event.data);
+});
+
+eventSource.addEventListener("open", (event) => {
+  console.log("stream opened:", event.data);
+});
+
+eventSource.onerror = () => {
+  eventSource.close();
+};
+```
+
+### Test Helm chart access
+
+```http
+GET /api/helm/test
+```
+
 ## Example Deployment Request
 
 Use the reusable sample file at [api-test-request.json](D:\CSTADPreUniversityTraining\ITP\spring\db-cluster\demo\api-test-request.json) for the first API test.

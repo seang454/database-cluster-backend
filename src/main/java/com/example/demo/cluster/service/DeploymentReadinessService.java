@@ -33,18 +33,7 @@ public class DeploymentReadinessService {
 
 	public void verifyDeployment(DeploymentTarget target, DatabaseEngine engine) {
 		KubernetesResourceDescriptor descriptor = descriptorFor(engine, target);
-		waitForSecret(target.namespace(), descriptor.secretName(), descriptor.kind() + " secret was not created");
 		waitForReady(descriptor, target.namespace(), descriptor.kind() + " did not become Ready");
-	}
-
-	private void waitForSecret(String namespace, String name, String failureMessage) {
-		for (int attempt = 0; attempt < 36; attempt++) {
-			if (client.secrets().inNamespace(namespace).withName(name).get() != null) {
-				return;
-			}
-			sleepSeconds(5);
-		}
-		throw new ClusterDeploymentException(failureMessage);
 	}
 
 	private void waitForReady(KubernetesResourceDescriptor descriptor, String namespace, String failureMessage) {
@@ -63,11 +52,11 @@ public class DeploymentReadinessService {
 
 	private KubernetesResourceDescriptor descriptorFor(DatabaseEngine engine, DeploymentTarget target) {
 		return switch (engine) {
-			case POSTGRESQL -> new KubernetesResourceDescriptor(CNPG_API_VERSION, CNPG_KIND, target.releaseName() + "-postgresql", target.releaseName() + "-postgresql-app");
-			case MONGODB -> new KubernetesResourceDescriptor(PSMDB_API_VERSION, PSMDB_KIND, target.releaseName() + "-mongodb", target.releaseName() + "-mongodb-credentials");
-			case MYSQL -> new KubernetesResourceDescriptor(PXC_API_VERSION, PXC_KIND, target.releaseName() + "-mysql", target.releaseName() + "-mysql-credentials");
-			case REDIS -> new KubernetesResourceDescriptor(REDIS_API_VERSION, REDIS_KIND, target.releaseName() + "-redis", target.releaseName() + "-redis-credentials");
-			case CASSANDRA -> new KubernetesResourceDescriptor(K8SSANDRA_API_VERSION, K8SSANDRA_KIND, target.releaseName() + "-cassandra", target.releaseName() + "-cassandra-credentials");
+			case POSTGRESQL -> new KubernetesResourceDescriptor(CNPG_API_VERSION, CNPG_KIND, target.releaseName() + "-postgresql");
+			case MONGODB -> new KubernetesResourceDescriptor(PSMDB_API_VERSION, PSMDB_KIND, target.releaseName() + "-mongodb");
+			case MYSQL -> new KubernetesResourceDescriptor(PXC_API_VERSION, PXC_KIND, target.releaseName() + "-mysql");
+			case REDIS -> new KubernetesResourceDescriptor(REDIS_API_VERSION, REDIS_KIND, target.releaseName() + "-redis");
+			case CASSANDRA -> new KubernetesResourceDescriptor(K8SSANDRA_API_VERSION, K8SSANDRA_KIND, target.releaseName() + "-cassandra");
 		};
 	}
 
@@ -109,8 +98,7 @@ public class DeploymentReadinessService {
 	private record KubernetesResourceDescriptor(
 		String apiVersion,
 		String kind,
-		String resourceName,
-		String secretName
+		String resourceName
 	) {
 	}
 }

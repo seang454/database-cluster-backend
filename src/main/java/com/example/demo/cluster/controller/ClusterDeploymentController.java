@@ -5,6 +5,7 @@ import com.example.demo.cluster.model.KubernetesDeploymentResult;
 import com.example.demo.cluster.service.ClusterService;
 import com.example.demo.cluster.service.KubernetesDeploymentService;
 
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -27,8 +28,8 @@ public class ClusterDeploymentController {
 	}
 
 	@PostMapping
-	public KubernetesDeploymentResult deploy(@RequestBody ClusterDeploymentRequest request) {
-		return clusterService.saveAndDeploy(request);
+	public ResponseEntity<KubernetesDeploymentResult> deploy(@RequestBody ClusterDeploymentRequest request) {
+		return ResponseEntity.ok(clusterService.saveAndDeploy(request));
 	}
 
 	@GetMapping("/{releaseName}")

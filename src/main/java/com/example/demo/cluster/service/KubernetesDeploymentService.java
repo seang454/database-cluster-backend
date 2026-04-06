@@ -65,22 +65,33 @@ public class KubernetesDeploymentService {
 	public KubernetesDeploymentResult deploy(ClusterDeploymentRequest request) {
 		DatabaseInstanceRequest database = requireDatabase(request);
 		DeploymentTarget target = namingService.resolve(request);
+		String cloudflareApiToken = resolveCloudflareApiToken(request.secrets());
 		Instant startedAt = Instant.now();
 		Path overrideValuesFile = null;
 		try {
 			ensureNamespace(target.namespace());
 			validateSecrets(database.engine(), request.secrets());
-			secretService.ensureCloudflareSecretIfPresent(target, request.secrets().cloudflareApiToken());
+			secretService.ensureCloudflareSecretIfPresent(target, cloudflareApiToken);
 			overrideValuesFile = helmValuesService.renderOverrideValues(request);
 			CommandResult commandResult = helmCommandService.upgradeInstall(target.releaseName(), target.namespace(), overrideValuesFile);
+			Instant finishedAt = Instant.now();
 			if (!commandResult.successful()) {
-				throw new ClusterDeploymentException(
-					"Helm install failed for " + target.releaseName() + " in namespace " + target.namespace() + ": "
-						+ (StringUtils.hasText(commandResult.stderr()) ? commandResult.stderr() : commandResult.stdout())
+				return failedResult(target, commandResult, overrideValuesFile, startedAt, finishedAt);
+			}
+			try {
+				deploymentReadinessService.verifyDeployment(target, database.engine());
+			}
+			catch (ClusterDeploymentException exception) {
+				return failedResult(
+					target,
+					commandResult,
+					overrideValuesFile,
+					startedAt,
+					Instant.now(),
+					exception.getMessage()
 				);
 			}
-			deploymentReadinessService.verifyDeployment(target, database.engine());
-			Instant finishedAt = Instant.now();
+			finishedAt = Instant.now();
 			return new KubernetesDeploymentResult(
 				target.releaseName(),
 				target.namespace(),
@@ -288,10 +299,49 @@ public class KubernetesDeploymentService {
 		}
 	}
 
+	private String resolveCloudflareApiToken(DeploymentSecretsRequest secrets) {
+		if (secrets != null && StringUtils.hasText(secrets.cloudflareApiToken())) {
+			return secrets.cloudflareApiToken();
+		}
+		return properties.getDefaultCloudflareApiToken();
+	}
+
 	private void requireText(String value, String field) {
 		if (!StringUtils.hasText(value)) {
 			throw new ClusterDeploymentException("Missing required secret: " + field);
 		}
+	}
+
+	private KubernetesDeploymentResult failedResult(
+		DeploymentTarget target,
+		CommandResult commandResult,
+		Path overrideValuesFile,
+		Instant startedAt,
+		Instant finishedAt
+	) {
+		return failedResult(target, commandResult, overrideValuesFile, startedAt, finishedAt, commandResult.stderr());
+	}
+
+	private KubernetesDeploymentResult failedResult(
+		DeploymentTarget target,
+		CommandResult commandResult,
+		Path overrideValuesFile,
+		Instant startedAt,
+		Instant finishedAt,
+		String stderr
+	) {
+		return new KubernetesDeploymentResult(
+			target.releaseName(),
+			target.namespace(),
+			helmCommandSummary(target.releaseName(), target.namespace()),
+			commandResult.exitCode(),
+			false,
+			valuesFileSummary(overrideValuesFile),
+			commandResult.stdout(),
+			stderr,
+			startedAt,
+			finishedAt
+		);
 	}
 
 	private record KubernetesResourceDescriptor(

@@ -48,6 +48,10 @@ public class HelmCommandService {
 		));
 	}
 
+	public CommandResult showChart() {
+		return run(buildShowChartCommand());
+	}
+
 	private List<String> buildUpgradeInstallCommand(String releaseName, String namespace, Path overrideValuesFile) {
 		List<String> command = new ArrayList<>();
 		command.add(helmExecutable());
@@ -72,6 +76,19 @@ public class HelmCommandService {
 		if (overrideValuesFile != null) {
 			command.add("-f");
 			command.add(overrideValuesFile.toString());
+		}
+		return command;
+	}
+
+	private List<String> buildShowChartCommand() {
+		List<String> command = new ArrayList<>();
+		command.add(helmExecutable());
+		command.add("show");
+		command.add("chart");
+		command.add(chartPath());
+		if (StringUtils.hasText(properties.getChartVersion())) {
+			command.add("--version");
+			command.add(properties.getChartVersion());
 		}
 		return command;
 	}
