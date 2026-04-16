@@ -1,0 +1,307 @@
+{
+    "info":  {
+                 "name":  "db-cluster API",
+                 "_postman_id":  "6a5ddae5-1d40-4d61-b9c7-9f6a4b1c2b91",
+                 "description":  "Postman collection for the db-cluster Spring Boot backend. It includes the namespaced cluster, deployment, Helm, Kubernetes, uninstall, and backup-settings endpoints with sample request bodies. Cloudflare DNS is managed by Spring Boot defaults, not by Postman. Backup paths and MinIO-related secret names are derived by Spring from the namespace, release, and cluster at deploy time.",
+                 "schema":  "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+             },
+    "variable":  [
+                     {
+                         "key":  "baseUrl",
+                         "value":  "http://localhost:8080"
+                     },
+                     {
+                         "key":  "clusterId",
+                         "value":  "11111111-1111-1111-1111-111111111111"
+                     },
+                     {
+                         "key":  "releaseName",
+                         "value":  "db-seang-postgres"
+                     },
+                     {
+                         "key":  "namespace",
+                         "value":  "ns-seang-postgres"
+                     },
+                     {
+                         "key":  "podName",
+                         "value":  "db-seang-postgres-postgresql-0"
+                     }
+                 ],
+    "item":  [
+                 {
+                     "name":  "Clusters",
+                     "item":  [
+                                  {
+                                      "name":  "List clusters",
+                                      "request":  {
+                                                      "description":  "GET /api/namespaces/{{namespace}}/clusters",
+                                                      "method":  "GET",
+                                                      "url":  "{{baseUrl}}/api/namespaces/{{namespace}}/clusters"
+                                                  }
+                                  },
+                                  {
+                                      "name":  "Get cluster by id",
+                                      "request":  {
+                                                      "description":  "GET /api/namespaces/{{namespace}}/clusters/{{clusterId}}",
+                                                      "method":  "GET",
+                                                      "url":  "{{baseUrl}}/api/namespaces/{{namespace}}/clusters/{{clusterId}}"
+                                                  }
+                                  },
+                                  {
+                                      "name":  "List deployments for cluster",
+                                      "request":  {
+                                                      "description":  "GET /api/namespaces/{{namespace}}/clusters/{{clusterId}}/deployments",
+                                                      "method":  "GET",
+                                                      "url":  "{{baseUrl}}/api/namespaces/{{namespace}}/clusters/{{clusterId}}/deployments"
+                                                  }
+                                  },
+                                  {
+                                      "name":  "Uninstall saved cluster",
+                                      "request":  {
+                                                      "description":  "DELETE /api/namespaces/{{namespace}}/clusters/{{clusterId}}",
+                                                      "method":  "DELETE",
+                                                      "url":  "{{baseUrl}}/api/namespaces/{{namespace}}/clusters/{{clusterId}}"
+                                                  }
+                                  }
+                              ]
+                 },
+                 {
+                     "name":  "Cluster Deployments",
+                     "item":  [
+                                  {
+                                      "name":  "Deploy PostgreSQL cluster",
+                                      "request":  {
+                                                      "description":  "POST /api/namespaces/{{namespace}}/cluster-deployments",
+                                                      "method":  "POST",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Content-Type",
+                                                                         "value":  "application/json"
+                                                                     }
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"releaseName\": \"db-seang-postgres\",\n  \"cluster\": {\n    \"name\": \"seang-postgres\",\n    \"notes\": \"Production PostgreSQL cluster\"\n  },\n  \"database\": {\n    \"engine\": \"POSTGRESQL\",\n    \"publicHostnames\": [\n      \"postgres-db.seang.shop\"\n    ],\n    \"backup\": {\n      \"enabled\": true,\n      \"schedule\": \"0 * * * * *\"\n    },\n    \"postgresql\": {\n      \"bootstrapDatabase\": \"appdb\",\n      \"bootstrapOwner\": \"appuser\"\n    }\n  },\n  \"secrets\": {\n    \"pgPassword\": \"secret\"\n  }\n}",
+                                                                   "options":  {
+                                                                                   "raw":  {
+                                                                                               "language":  "json"
+                                                                                           }
+                                                                               }
+                                                               },
+                                                      "url":  "{{baseUrl}}/api/namespaces/{{namespace}}/cluster-deployments"
+                                                  }
+                                  },
+                                  {
+                                      "name":  "Deploy MongoDB cluster",
+                                      "request":  {
+                                                      "description":  "POST /api/namespaces/{{namespace}}/cluster-deployments",
+                                                      "method":  "POST",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Content-Type",
+                                                                         "value":  "application/json"
+                                                                     }
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"releaseName\": \"db-seang-mongo\",\n  \"cluster\": {\n    \"name\": \"seang-mongo\",\n    \"notes\": \"Production MongoDB replica set\"\n  },\n  \"database\": {\n    \"engine\": \"MONGODB\",\n    \"publicHostnames\": [\n      \"mongo-db-0.seang.shop\",\n      \"mongo-db-1.seang.shop\",\n      \"mongo-db-2.seang.shop\"\n    ],\n    \"backup\": {\n      \"enabled\": true,\n      \"schedule\": \"10 2 * * *\"\n    },\n    \"mongo\": {\n      \"replicaSetHorizonsEnabled\": true,\n      \"replicaSetHorizonsBasePort\": 27017\n    }\n  },\n  \"secrets\": {\n    \"mongoPassword\": \"secret\"\n  }\n}",
+                                                                   "options":  {
+                                                                                   "raw":  {
+                                                                                               "language":  "json"
+                                                                                           }
+                                                                               }
+                                                               },
+                                                      "url":  "{{baseUrl}}/api/namespaces/{{namespace}}/cluster-deployments"
+                                                  }
+                                  },
+                                  {
+                                      "name":  "Deploy MySQL cluster",
+                                      "request":  {
+                                                      "description":  "POST /api/namespaces/{{namespace}}/cluster-deployments",
+                                                      "method":  "POST",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Content-Type",
+                                                                         "value":  "application/json"
+                                                                     }
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"releaseName\": \"db-seang-mysql\",\n  \"cluster\": {\n    \"name\": \"seang-mysql\",\n    \"notes\": \"Production MySQL PXC cluster\"\n  },\n  \"database\": {\n    \"engine\": \"MYSQL\",\n    \"publicHostnames\": [\n      \"mysql-db.seang.shop\"\n    ],\n    \"backup\": {\n      \"enabled\": true,\n      \"schedule\": \"20 2 * * *\"\n    },\n    \"mysql\": {\n      \"haproxySize\": 2\n    }\n  },\n  \"secrets\": {\n    \"mysqlPassword\": \"secret\"\n  }\n}",
+                                                                   "options":  {
+                                                                                   "raw":  {
+                                                                                               "language":  "json"
+                                                                                           }
+                                                                               }
+                                                               },
+                                                      "url":  "{{baseUrl}}/api/namespaces/{{namespace}}/cluster-deployments"
+                                                  }
+                                  },
+                                  {
+                                      "name":  "Deploy Redis cluster",
+                                      "request":  {
+                                                      "description":  "POST /api/namespaces/{{namespace}}/cluster-deployments",
+                                                      "method":  "POST",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Content-Type",
+                                                                         "value":  "application/json"
+                                                                     }
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"releaseName\": \"db-seang-redis\",\n  \"cluster\": {\n    \"name\": \"seang-redis\",\n    \"notes\": \"Production Redis cluster\"\n  },\n  \"database\": {\n    \"engine\": \"REDIS\",\n    \"publicHostnames\": [\n      \"redis-db.seang.shop\"\n    ],\n    \"redis\": {\n      \"exporterEnabled\": false\n    }\n  },\n  \"secrets\": {\n    \"redisPassword\": \"secret\"\n  }\n}",
+                                                                   "options":  {
+                                                                                   "raw":  {
+                                                                                               "language":  "json"
+                                                                                           }
+                                                                               }
+                                                               },
+                                                      "url":  "{{baseUrl}}/api/namespaces/{{namespace}}/cluster-deployments"
+                                                  }
+                                  },
+                                  {
+                                      "name":  "Deploy Cassandra cluster",
+                                      "request":  {
+                                                      "description":  "POST /api/namespaces/{{namespace}}/cluster-deployments",
+                                                      "method":  "POST",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Content-Type",
+                                                                         "value":  "application/json"
+                                                                     }
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"releaseName\": \"db-seang-cassandra\",\n  \"cluster\": {\n    \"name\": \"seang-cassandra\",\n    \"notes\": \"Production Cassandra cluster\"\n  },\n  \"database\": {\n    \"engine\": \"CASSANDRA\",\n    \"publicHostnames\": [\n      \"cassandra-db.seang.shop\"\n    ],\n    \"backup\": {\n      \"enabled\": true,\n      \"schedule\": \"30 3 * * *\"\n    },\n    \"cassandra\": {\n      \"clusterName\": \"seang-cassandra\",\n      \"datacenter\": \"dc1\",\n      \"requireClientAuth\": false\n    }\n  },\n  \"secrets\": {\n    \"cassandraPassword\": \"secret\"\n  }\n}",
+                                                                   "options":  {
+                                                                                   "raw":  {
+                                                                                               "language":  "json"
+                                                                                           }
+                                                                               }
+                                                               },
+                                                      "url":  "{{baseUrl}}/api/namespaces/{{namespace}}/cluster-deployments"
+                                                  }
+                                  },
+                                  {
+                                      "name":  "Update backup settings",
+                                      "request":  {
+                                                      "description":  "PATCH /api/namespaces/{{namespace}}/clusters/{{clusterId}}/backup",
+                                                      "method":  "PATCH",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Content-Type",
+                                                                         "value":  "application/json"
+                                                                     }
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"enabled\": true,\n  \"schedule\": \"0 * * * * *\"\n}"
+                                                               },
+                                                      "url":  "{{baseUrl}}/api/namespaces/{{namespace}}/clusters/{{clusterId}}/backup"
+                                                  }
+                                  },
+                                  {
+                                      "name":  "Disable backup",
+                                      "request":  {
+                                                      "description":  "PATCH /api/namespaces/{{namespace}}/clusters/{{clusterId}}/backup",
+                                                      "method":  "PATCH",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Content-Type",
+                                                                         "value":  "application/json"
+                                                                     }
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"enabled\": false\n}"
+                                                               },
+                                                      "url":  "{{baseUrl}}/api/namespaces/{{namespace}}/clusters/{{clusterId}}/backup"
+                                                  }
+                                  }
+                              ]
+                 },
+                 {
+                     "name":  "Helm",
+                     "item":  [
+                                  {
+                                      "name":  "Test Helm chart access",
+                                      "request":  {
+                                                      "description":  "GET /api/helm/test",
+                                                      "method":  "GET",
+                                                      "url":  "{{baseUrl}}/api/helm/test"
+                                                  }
+                                  }
+                              ]
+                 },
+                 {
+                     "name":  "Kubernetes",
+                     "item":  [
+                                  {
+                                      "name":  "Test Kubernetes access",
+                                      "request":  {
+                                                      "description":  "GET /api/kubernetes/test",
+                                                      "method":  "GET",
+                                                      "url":  "{{baseUrl}}/api/kubernetes/test"
+                                                  }
+                                  },
+                                  {
+                                      "name":  "List pods in namespace",
+                                      "request":  {
+                                                      "description":  "GET /api/kubernetes/namespaces/{{namespace}}/pods",
+                                                      "method":  "GET",
+                                                      "url":  "{{baseUrl}}/api/kubernetes/namespaces/{{namespace}}/pods"
+                                                  }
+                                  },
+                                  {
+                                      "name":  "Namespace overview",
+                                      "request":  {
+                                                      "description":  "GET /api/kubernetes/namespaces/{{namespace}}/overview",
+                                                      "method":  "GET",
+                                                      "url":  "{{baseUrl}}/api/kubernetes/namespaces/{{namespace}}/overview"
+                                                  }
+                                  },
+                                  {
+                                      "name":  "Database resources",
+                                      "request":  {
+                                                      "description":  "GET /api/kubernetes/namespaces/{{namespace}}/database-resources",
+                                                      "method":  "GET",
+                                                      "url":  "{{baseUrl}}/api/kubernetes/namespaces/{{namespace}}/database-resources"
+                                                  }
+                                  },
+                                  {
+                                      "name":  "Events",
+                                      "request":  {
+                                                      "description":  "GET /api/kubernetes/namespaces/{{namespace}}/events?warningsOnly=false\u0026limit=50",
+                                                      "method":  "GET",
+                                                      "url":  "{{baseUrl}}/api/kubernetes/namespaces/{{namespace}}/events?warningsOnly=false\u0026limit=50"
+                                                  }
+                                  },
+                                  {
+                                      "name":  "Services",
+                                      "request":  {
+                                                      "description":  "GET /api/kubernetes/namespaces/{{namespace}}/services",
+                                                      "method":  "GET",
+                                                      "url":  "{{baseUrl}}/api/kubernetes/namespaces/{{namespace}}/services"
+                                                  }
+                                  },
+                                  {
+                                      "name":  "Persistent volume claims",
+                                      "request":  {
+                                                      "description":  "GET /api/kubernetes/namespaces/{{namespace}}/persistent-volume-claims",
+                                                      "method":  "GET",
+                                                      "url":  "{{baseUrl}}/api/kubernetes/namespaces/{{namespace}}/persistent-volume-claims"
+                                                  }
+                                  },
+                                  {
+                                      "name":  "Stream pod logs",
+                                      "request":  {
+                                                      "description":  "GET /api/kubernetes/namespaces/{{namespace}}/pods/{{podName}}/logs/stream?tailLines=100",
+                                                      "method":  "GET",
+                                                      "url":  "{{baseUrl}}/api/kubernetes/namespaces/{{namespace}}/pods/{{podName}}/logs/stream?tailLines=100"
+                                                  }
+                                  }
+                              ]
+                 }
+             ]
+}

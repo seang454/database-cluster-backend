@@ -43,23 +43,23 @@ public class KubernetesController {
 	}
 
 	@GetMapping("/namespaces/{namespace}/pods")
-	public PodSummaryResponse listPods(@PathVariable String namespace) {
+	public PodSummaryResponse listPods(@PathVariable("namespace") String namespace) {
 		return podLogService.listPods(namespace);
 	}
 
 	@GetMapping("/namespaces/{namespace}/overview")
-	public NamespaceOverviewResponse overview(@PathVariable String namespace) {
+	public NamespaceOverviewResponse overview(@PathVariable("namespace") String namespace) {
 		return resourceQueryService.namespaceOverview(namespace);
 	}
 
 	@GetMapping("/namespaces/{namespace}/database-resources")
-	public DatabaseResourceSummaryResponse listDatabaseResources(@PathVariable String namespace) {
+	public DatabaseResourceSummaryResponse listDatabaseResources(@PathVariable("namespace") String namespace) {
 		return resourceQueryService.listDatabaseResources(namespace);
 	}
 
 	@GetMapping("/namespaces/{namespace}/events")
 	public EventSummaryResponse listEvents(
-		@PathVariable String namespace,
+		@PathVariable("namespace") String namespace,
 		@RequestParam(defaultValue = "false") boolean warningsOnly,
 		@RequestParam(defaultValue = "50") int limit
 	) {
@@ -67,19 +67,19 @@ public class KubernetesController {
 	}
 
 	@GetMapping("/namespaces/{namespace}/services")
-	public ServiceSummaryResponse listServices(@PathVariable String namespace) {
+	public ServiceSummaryResponse listServices(@PathVariable("namespace") String namespace) {
 		return resourceQueryService.listServices(namespace);
 	}
 
 	@GetMapping("/namespaces/{namespace}/persistent-volume-claims")
-	public PersistentVolumeClaimSummaryResponse listPersistentVolumeClaims(@PathVariable String namespace) {
+	public PersistentVolumeClaimSummaryResponse listPersistentVolumeClaims(@PathVariable("namespace") String namespace) {
 		return resourceQueryService.listPersistentVolumeClaims(namespace);
 	}
 
 	@GetMapping(path = "/namespaces/{namespace}/pods/{podName}/logs/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 	public SseEmitter streamPodLogs(
-		@PathVariable String namespace,
-		@PathVariable String podName,
+		@PathVariable("namespace") String namespace,
+		@PathVariable("podName") String podName,
 		@RequestParam(required = false) String container,
 		@RequestParam(required = false) Integer tailLines
 	) {

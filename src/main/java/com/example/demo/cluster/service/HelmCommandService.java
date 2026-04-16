@@ -25,7 +25,11 @@ public class HelmCommandService {
 	}
 
 	public CommandResult upgradeInstall(String releaseName, String namespace, Path overrideValuesFile) {
-		return run(buildUpgradeInstallCommand(releaseName, namespace, overrideValuesFile));
+		return run(buildUpgradeInstallCommand(releaseName, namespace, overrideValuesFile, false));
+	}
+
+	public CommandResult upgradeInstallReuseValues(String releaseName, String namespace, Path overrideValuesFile) {
+		return run(buildUpgradeInstallCommand(releaseName, namespace, overrideValuesFile, true));
 	}
 
 	public CommandResult uninstall(String releaseName, String namespace) {
@@ -52,7 +56,7 @@ public class HelmCommandService {
 		return run(buildShowChartCommand());
 	}
 
-	private List<String> buildUpgradeInstallCommand(String releaseName, String namespace, Path overrideValuesFile) {
+	private List<String> buildUpgradeInstallCommand(String releaseName, String namespace, Path overrideValuesFile, boolean reuseValues) {
 		List<String> command = new ArrayList<>();
 		command.add(helmExecutable());
 		command.add("upgrade");
@@ -64,7 +68,10 @@ public class HelmCommandService {
 		command.add("--create-namespace");
 		command.add("--wait");
 		command.add("--timeout");
-		command.add("10m");
+		command.add(StringUtils.hasText(properties.getHelmTimeout()) ? properties.getHelmTimeout() : "30m");
+		if (reuseValues) {
+			command.add("--reuse-values");
+		}
 		if (StringUtils.hasText(properties.getChartVersion())) {
 			command.add("--version");
 			command.add(properties.getChartVersion());

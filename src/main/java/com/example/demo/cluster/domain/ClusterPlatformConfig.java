@@ -20,15 +20,12 @@ public class ClusterPlatformConfig {
 	@Column(name = "external_tcp_proxy_enabled")
 	private Boolean externalTcpProxyEnabled = Boolean.TRUE;
 
-	@Column(name = "external_secrets_enabled")
-	private Boolean externalSecretsEnabled = Boolean.TRUE;
-
 	@Column(name = "cloudflare_enabled")
 	private Boolean cloudflareEnabled = Boolean.FALSE;
 
 	@Column(name = "cloudflare_zone_name", length = 255)
 	private String cloudflareZoneName;
 
-	@Column(name = "vault_enabled")
-	private Boolean vaultEnabled = Boolean.TRUE;
+	@Column(name = "cloudflare_zone_id", length = 80)
+	private String cloudflareZoneId;
 }

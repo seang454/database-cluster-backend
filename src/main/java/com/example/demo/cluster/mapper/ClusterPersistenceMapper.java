@@ -23,6 +23,8 @@ import com.example.demo.cluster.dto.MongoConfigRequest;
 import com.example.demo.cluster.dto.MysqlConfigRequest;
 import com.example.demo.cluster.dto.PostgresqlConfigRequest;
 import com.example.demo.cluster.dto.RedisConfigRequest;
+import com.example.demo.cluster.domain.enumtype.DatabaseEngine;
+import com.example.demo.cluster.domain.enumtype.TlsMode;
 
 import org.springframework.stereotype.Component;
 
@@ -44,9 +46,6 @@ public class ClusterPersistenceMapper {
 		}
 		cluster.setName(request.name());
 		cluster.setEnvironment(request.environment());
-		cluster.setDomain(request.domain());
-		cluster.setExternalIp(request.externalIp());
-		cluster.setDeploymentName(request.deploymentName());
 		cluster.setNotes(request.notes());
 		cluster.setPlatformConfig(toPlatformConfig(request.platformConfig()));
 	}
@@ -55,26 +54,26 @@ public class ClusterPersistenceMapper {
 		DatabaseInstance databaseInstance = new DatabaseInstance();
 		databaseInstance.setCluster(cluster);
 		databaseInstance.setEngine(request.engine());
-		databaseInstance.setEnabled(Boolean.TRUE.equals(request.enabled()));
+		databaseInstance.setEnabled(request.enabled() != null ? request.enabled() : Boolean.TRUE);
 		databaseInstance.setInstances(request.instances() != null ? request.instances() : 1);
 		databaseInstance.setStorageSize(request.storageSize());
 		databaseInstance.setStorageClass(request.storageClass());
-		databaseInstance.setExternalAccessEnabled(Boolean.TRUE.equals(request.externalAccessEnabled()));
+		databaseInstance.setExternalAccessEnabled(defaultExternalAccessEnabled(request.engine(), request.externalAccessEnabled()));
 		databaseInstance.setPort(request.port());
 		databaseInstance.setPublicHostnames(request.publicHostnames() != null ? new ArrayList<>(request.publicHostnames()) : new ArrayList<>());
-		databaseInstance.setTlsEnabled(Boolean.TRUE.equals(request.tlsEnabled()));
-		databaseInstance.setTlsMode(request.tlsMode());
+		databaseInstance.setTlsEnabled(defaultTlsEnabled(request.engine(), request.tlsEnabled()));
+		databaseInstance.setTlsMode(defaultTlsMode(request.engine(), request.tlsMode()));
 		databaseInstance.setTlsSecretName(request.tlsSecretName());
 		databaseInstance.setTlsCaSecretName(request.tlsCaSecretName());
 		databaseInstance.setMonitoringEnabled(Boolean.TRUE.equals(request.monitoringEnabled()));
 		databaseInstance.setNotes(request.notes());
-		databaseInstance.setPostgresqlConfig(toPostgresqlConfig(request.postgresql()));
+		databaseInstance.setPostgresqlConfig(toPostgresqlConfig(request.engine(), request.postgresql()));
 		databaseInstance.setMongoConfig(toMongoConfig(request.mongo()));
 		databaseInstance.setMysqlConfig(toMysqlConfig(request.mysql()));
 		databaseInstance.setRedisConfig(toRedisConfig(request.redis()));
 		databaseInstance.setCassandraConfig(toCassandraConfig(request.cassandra()));
 		databaseInstance.setDatabaseResource(toDatabaseResource(request.resource(), databaseInstance));
-		databaseInstance.setDatabaseBackup(toDatabaseBackup(request.backup(), databaseInstance));
+		databaseInstance.setDatabaseBackup(toDatabaseBackup(request.engine(), request.backup(), databaseInstance));
 		return databaseInstance;
 	}
 
@@ -83,12 +82,14 @@ public class ClusterPersistenceMapper {
 		if (request == null) {
 			return config;
 		}
-		if (request.cloudflareEnabled() != null) {
-			config.setCloudflareEnabled(request.cloudflareEnabled());
+		if (request.ingressEnabled() != null) {
+			config.setIngressEnabled(request.ingressEnabled());
 		}
-		config.setCloudflareZoneName(request.cloudflareZoneName());
-		if (request.vaultEnabled() != null) {
-			config.setVaultEnabled(request.vaultEnabled());
+		if (request.ingressClassName() != null) {
+			config.setIngressClassName(request.ingressClassName());
+		}
+		if (request.externalTcpProxyEnabled() != null) {
+			config.setExternalTcpProxyEnabled(request.externalTcpProxyEnabled());
 		}
 		return config;
 	}
@@ -109,13 +110,13 @@ public class ClusterPersistenceMapper {
 		return resource;
 	}
 
-	private DatabaseBackup toDatabaseBackup(DatabaseBackupRequest request, DatabaseInstance databaseInstance) {
+	private DatabaseBackup toDatabaseBackup(DatabaseEngine engine, DatabaseBackupRequest request, DatabaseInstance databaseInstance) {
 		if (request == null) {
 			return null;
 		}
 		DatabaseBackup backup = new DatabaseBackup();
 		backup.setDatabaseInstance(databaseInstance);
-		backup.setEnabled(Boolean.TRUE.equals(request.enabled()));
+		backup.setEnabled(request.enabled() != null ? request.enabled() : Boolean.TRUE);
 		backup.setDestinationPath(request.destinationPath());
 		backup.setCredentialSecret(request.credentialSecret());
 		backup.setRetentionPolicy(request.retentionPolicy());
@@ -123,12 +124,15 @@ public class ClusterPersistenceMapper {
 		return backup;
 	}
 
-	private PostgresqlConfig toPostgresqlConfig(PostgresqlConfigRequest request) {
+	private PostgresqlConfig toPostgresqlConfig(DatabaseEngine engine, PostgresqlConfigRequest request) {
 		PostgresqlConfig config = new PostgresqlConfig();
 		if (request == null) {
+			config.setWalEnabled(engine == DatabaseEngine.POSTGRESQL ? Boolean.TRUE : Boolean.FALSE);
 			return config;
 		}
-		config.setWalEnabled(Boolean.TRUE.equals(request.walEnabled()));
+		config.setWalEnabled(request.walEnabled() != null
+			? request.walEnabled()
+			: engine == DatabaseEngine.POSTGRESQL ? Boolean.TRUE : Boolean.FALSE);
 		config.setWalSize(request.walSize());
 		config.setBootstrapDatabase(request.bootstrapDatabase());
 		config.setBootstrapOwner(request.bootstrapOwner());
@@ -172,5 +176,26 @@ public class ClusterPersistenceMapper {
 		config.setDatacenter(request.datacenter());
 		config.setRequireClientAuth(Boolean.TRUE.equals(request.requireClientAuth()));
 		return config;
+	}
+
+	private Boolean defaultExternalAccessEnabled(DatabaseEngine engine, Boolean value) {
+		if (value != null) {
+			return value;
+		}
+		return engine == DatabaseEngine.POSTGRESQL ? Boolean.TRUE : Boolean.FALSE;
+	}
+
+	private Boolean defaultTlsEnabled(DatabaseEngine engine, Boolean value) {
+		if (value != null) {
+			return value;
+		}
+		return engine == DatabaseEngine.POSTGRESQL ? Boolean.TRUE : Boolean.FALSE;
+	}
+
+	private TlsMode defaultTlsMode(DatabaseEngine engine, TlsMode value) {
+		if (value != null) {
+			return value;
+		}
+		return engine == DatabaseEngine.POSTGRESQL ? TlsMode.CERT_MANAGER : TlsMode.DISABLED;
 	}
 }

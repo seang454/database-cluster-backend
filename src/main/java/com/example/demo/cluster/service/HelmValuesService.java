@@ -4,11 +4,10 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
+import com.example.demo.cluster.domain.DatabaseBackup;
 import com.example.demo.cluster.domain.enumtype.DatabaseEngine;
 import com.example.demo.cluster.domain.enumtype.TlsMode;
 import com.example.demo.cluster.dto.ClusterDeploymentRequest;
@@ -39,33 +38,16 @@ public class HelmValuesService {
 
 	public String render(ClusterDeploymentRequest request) {
 		Map<String, Object> values = new LinkedHashMap<>();
-		// The Vault bootstrap stack is installed separately. Spring only deploys the
-		// database release and must not let the chart try to own vault-transit.
-		values.put("vaultTransit", Map.of("enabled", false));
-		values.put("vault", Map.of("enabled", false));
+		String releaseName = request != null ? request.releaseName() : null;
+		String namespace = request != null ? request.namespace() : null;
+		String clusterName = request != null && request.cluster() != null ? request.cluster().name() : null;
 		ClusterPlatformConfigRequest platformConfig = request.cluster() != null ? request.cluster().platformConfig() : null;
-		if (platformConfig != null) {
-			Map<String, Object> cloudflare = new LinkedHashMap<>();
-			if (platformConfig.cloudflareEnabled() != null) {
-				cloudflare.put("enabled", platformConfig.cloudflareEnabled());
-			}
-			if (StringUtils.hasText(platformConfig.cloudflareZoneName())) {
-				cloudflare.put("zoneName", platformConfig.cloudflareZoneName());
-			}
-			if (request.cluster() != null && StringUtils.hasText(request.cluster().externalIp())) {
-				cloudflare.put("externalIP", request.cluster().externalIp());
-			}
-			if (!cloudflare.isEmpty()) {
-				values.put("cloudflare", cloudflare);
-			}
-			if (platformConfig.vaultEnabled() != null) {
-				values.put("externalSecrets", Map.of("enabled", platformConfig.vaultEnabled()));
-			}
-		}
+		renderIngress(values, platformConfig);
+		renderExternalTcpProxy(values, platformConfig);
 
 		DatabaseInstanceRequest database = request.database();
 		if (database != null && database.engine() != null) {
-			values.put(databaseSection(database.engine()), renderDatabase(database, request.secrets()));
+			values.put(databaseSection(database.engine()), renderDatabase(database, request.secrets(), namespace, releaseName, clusterName));
 		}
 
 		DumperOptions options = new DumperOptions();
@@ -76,18 +58,81 @@ public class HelmValuesService {
 		return yaml.dump(values);
 	}
 
-	private Map<String, Object> renderDatabase(DatabaseInstanceRequest database, DeploymentSecretsRequest secrets) {
+	public String renderBackupOverride(DatabaseEngine engine, DatabaseBackup backup, String namespace, String releaseName, String clusterName) {
+		Map<String, Object> values = new LinkedHashMap<>();
+		if (engine != null && backup != null) {
+			Map<String, Object> engineValues = new LinkedHashMap<>();
+			Map<String, Object> backupValues = new LinkedHashMap<>();
+			if (backup.getEnabled() != null) {
+				backupValues.put("enabled", backup.getEnabled());
+			}
+		if (engine == DatabaseEngine.POSTGRESQL) {
+			String destinationPath = postgresBackupDestinationPath(namespace, releaseName, chartFullname(DatabaseEngine.POSTGRESQL, releaseName));
+			if (StringUtils.hasText(destinationPath)) {
+				backupValues.put("destinationPath", destinationPath);
+			}
+				if (StringUtils.hasText(releaseName)) {
+					String minioSecretName = releaseScopedSecretName("minio-credentials", releaseName);
+					Map<String, Object> s3Credentials = new LinkedHashMap<>();
+					s3Credentials.put("accessKeyId", Map.of("secretName", minioSecretName, "key", "root-user"));
+					s3Credentials.put("secretAccessKey", Map.of("secretName", minioSecretName, "key", "root-password"));
+					backupValues.put("s3Credentials", s3Credentials);
+				}
+			}
+			else {
+				backupValues.put("bucket", namespace);
+				String prefix = backupPrefix(releaseName, chartFullname(engine, releaseName));
+				if (StringUtils.hasText(prefix)) {
+					backupValues.put("prefix", prefix);
+				}
+			}
+			String credentialSecret = releaseScopedSecretName(backup.getCredentialSecret(), releaseName);
+			if (StringUtils.hasText(credentialSecret)) {
+				backupValues.put("credentialSecret", credentialSecret);
+			}
+			if (StringUtils.hasText(backup.getRetentionPolicy())) {
+				backupValues.put("retentionPolicy", backup.getRetentionPolicy());
+			}
+			if (StringUtils.hasText(backup.getSchedule())) {
+				if (engine == DatabaseEngine.POSTGRESQL) {
+					backupValues.put("schedule", Map.of(
+						"cron", backup.getSchedule(),
+						"immediate", false
+					));
+				}
+				else {
+					backupValues.put("schedule", backup.getSchedule());
+				}
+			}
+			if (!backupValues.isEmpty()) {
+				engineValues.put("backup", backupValues);
+				values.put(databaseSection(engine), engineValues);
+			}
+		}
+
+		DumperOptions options = new DumperOptions();
+		options.setDefaultFlowStyle(DumperOptions.FlowStyle.BLOCK);
+		options.setPrettyFlow(true);
+		options.setIndent(2);
+		Yaml yaml = new Yaml(options);
+		return yaml.dump(values);
+	}
+
+	private Map<String, Object> renderDatabase(
+		DatabaseInstanceRequest database,
+		DeploymentSecretsRequest secrets,
+		String namespace,
+		String releaseName,
+		String clusterName
+	) {
 		Map<String, Object> values = new LinkedHashMap<>();
 		if (database.enabled() != null) {
 			values.put("enabled", database.enabled());
 		}
-		if (database.externalAccessEnabled() != null || hasAnyPublicHostnames(database)) {
+		if (database.externalAccessEnabled() != null) {
 			Map<String, Object> externalAccess = new LinkedHashMap<>();
 			if (database.externalAccessEnabled() != null) {
 				externalAccess.put("enabled", database.externalAccessEnabled());
-			}
-			if (database.publicHostnames() != null && !database.publicHostnames().isEmpty()) {
-				externalAccess.put("publicHostnames", new ArrayList<>(database.publicHostnames()));
 			}
 			values.put("externalAccess", externalAccess);
 		}
@@ -115,16 +160,51 @@ public class HelmValuesService {
 		}
 
 		switch (database.engine()) {
-			case POSTGRESQL -> renderPostgresql(values, database, secrets);
-			case MONGODB -> renderMongo(values, database, secrets);
-			case MYSQL -> renderMysql(values, database, secrets);
+			case POSTGRESQL -> renderPostgresql(values, database, secrets, namespace, releaseName, clusterName);
+			case MONGODB -> renderMongo(values, database, secrets, namespace, releaseName, clusterName);
+			case MYSQL -> renderMysql(values, database, secrets, namespace, releaseName, clusterName);
 			case REDIS -> renderRedis(values, database, secrets);
-			case CASSANDRA -> renderCassandra(values, database, secrets);
+			case CASSANDRA -> renderCassandra(values, database, secrets, namespace, releaseName, clusterName);
 		}
 		return values;
 	}
 
-	private void renderPostgresql(Map<String, Object> values, DatabaseInstanceRequest database, DeploymentSecretsRequest secrets) {
+	private void renderIngress(Map<String, Object> values, ClusterPlatformConfigRequest platformConfig) {
+		if (platformConfig == null) {
+			return;
+		}
+		Map<String, Object> ingress = new LinkedHashMap<>();
+		if (platformConfig.ingressEnabled() != null) {
+			ingress.put("enabled", platformConfig.ingressEnabled());
+		}
+		if (StringUtils.hasText(platformConfig.ingressClassName())) {
+			ingress.put("className", platformConfig.ingressClassName());
+		}
+		if (!ingress.isEmpty()) {
+			values.put("ingress", ingress);
+		}
+	}
+
+	private void renderExternalTcpProxy(Map<String, Object> values, ClusterPlatformConfigRequest platformConfig) {
+		if (platformConfig == null) {
+			return;
+		}
+		Map<String, Object> externalTcpProxy = new LinkedHashMap<>();
+		if (platformConfig.externalTcpProxyEnabled() != null) {
+			externalTcpProxy.put("enabled", platformConfig.externalTcpProxyEnabled());
+		}
+		values.put("externalTcpProxy", externalTcpProxy);
+	}
+
+	private void renderPostgresql(
+		Map<String, Object> values,
+		DatabaseInstanceRequest database,
+		DeploymentSecretsRequest secrets,
+		String namespace,
+		String releaseName,
+		String clusterName
+	) {
+		values.put("enabled", true);
 		Map<String, Object> cluster = new LinkedHashMap<>();
 		if (database.instances() != null && database.instances() > 0) {
 			cluster.put("instances", database.instances());
@@ -167,9 +247,20 @@ public class HelmValuesService {
 				"admin", secrets.pgPassword()
 			));
 		}
+		if (database.backup() != null) {
+			values.put("backup", renderPostgresqlBackup(database.backup(), namespace, releaseName, clusterName));
+		}
 	}
 
-	private void renderMongo(Map<String, Object> values, DatabaseInstanceRequest database, DeploymentSecretsRequest secrets) {
+	private void renderMongo(
+		Map<String, Object> values,
+		DatabaseInstanceRequest database,
+		DeploymentSecretsRequest secrets,
+		String namespace,
+		String releaseName,
+		String clusterName
+	) {
+		values.put("enabled", true);
 		Map<String, Object> cluster = new LinkedHashMap<>();
 		if (database.instances() != null && database.instances() > 0) {
 			cluster.put("instances", database.instances());
@@ -204,9 +295,20 @@ public class HelmValuesService {
 				"replicationKey", secrets.mongoPassword()
 			));
 		}
+		if (database.backup() != null) {
+			values.put("backup", renderMongoBackup(database.backup(), namespace, releaseName, clusterName));
+		}
 	}
 
-	private void renderMysql(Map<String, Object> values, DatabaseInstanceRequest database, DeploymentSecretsRequest secrets) {
+	private void renderMysql(
+		Map<String, Object> values,
+		DatabaseInstanceRequest database,
+		DeploymentSecretsRequest secrets,
+		String namespace,
+		String releaseName,
+		String clusterName
+	) {
+		values.put("enabled", true);
 		Map<String, Object> cluster = new LinkedHashMap<>();
 		if (database.instances() != null && database.instances() > 0) {
 			cluster.put("instances", database.instances());
@@ -231,9 +333,13 @@ public class HelmValuesService {
 				"clusterCheckPassword", secrets.mysqlPassword()
 			));
 		}
+		if (database.backup() != null) {
+			values.put("backup", renderMysqlBackup(database.backup(), namespace, releaseName, clusterName));
+		}
 	}
 
 	private void renderRedis(Map<String, Object> values, DatabaseInstanceRequest database, DeploymentSecretsRequest secrets) {
+		values.put("enabled", true);
 		Map<String, Object> cluster = new LinkedHashMap<>();
 		if (database.instances() != null && database.instances() > 0) {
 			cluster.put("instances", database.instances());
@@ -255,7 +361,15 @@ public class HelmValuesService {
 		}
 	}
 
-	private void renderCassandra(Map<String, Object> values, DatabaseInstanceRequest database, DeploymentSecretsRequest secrets) {
+	private void renderCassandra(
+		Map<String, Object> values,
+		DatabaseInstanceRequest database,
+		DeploymentSecretsRequest secrets,
+		String namespace,
+		String releaseName,
+		String clusterName
+	) {
+		values.put("enabled", true);
 		Map<String, Object> cluster = new LinkedHashMap<>();
 		if (database.instances() != null && database.instances() > 0) {
 			cluster.put("instances", database.instances());
@@ -296,6 +410,189 @@ public class HelmValuesService {
 		if (secrets != null && StringUtils.hasText(secrets.cassandraPassword())) {
 			values.put("credentials", Map.of("password", secrets.cassandraPassword()));
 		}
+		if (database.backup() != null) {
+			values.put("backup", renderCassandraBackup(database.backup(), namespace, releaseName, clusterName));
+		}
+	}
+
+	private Map<String, Object> renderPostgresqlBackup(
+		com.example.demo.cluster.dto.DatabaseBackupRequest backup,
+		String namespace,
+		String releaseName,
+		String clusterName
+	) {
+		Map<String, Object> values = new LinkedHashMap<>();
+		if (backup.enabled() != null) {
+			values.put("enabled", backup.enabled());
+		}
+		String destinationPath = postgresBackupDestinationPath(namespace, releaseName, chartFullname(DatabaseEngine.POSTGRESQL, releaseName));
+		if (StringUtils.hasText(destinationPath)) {
+			values.put("destinationPath", destinationPath);
+		}
+		if (StringUtils.hasText(releaseName)) {
+			Map<String, Object> s3Credentials = new LinkedHashMap<>();
+			String minioSecretName = releaseScopedSecretName("minio-credentials", releaseName);
+			s3Credentials.put("accessKeyId", Map.of("secretName", minioSecretName, "key", "root-user"));
+			s3Credentials.put("secretAccessKey", Map.of("secretName", minioSecretName, "key", "root-password"));
+			values.put("s3Credentials", s3Credentials);
+		}
+		String credentialSecret = releaseScopedSecretName(backup.credentialSecret(), releaseName);
+		if (StringUtils.hasText(credentialSecret)) {
+			values.put("credentialSecret", credentialSecret);
+		}
+		if (StringUtils.hasText(backup.retentionPolicy())) {
+			values.put("retentionPolicy", backup.retentionPolicy());
+		}
+		if (StringUtils.hasText(backup.schedule())) {
+			values.put("schedule", Map.of(
+				"cron", backup.schedule(),
+				"immediate", false
+			));
+		}
+		return values;
+	}
+
+	private Map<String, Object> renderMongoBackup(
+		com.example.demo.cluster.dto.DatabaseBackupRequest backup,
+		String namespace,
+		String releaseName,
+		String clusterName
+	) {
+		Map<String, Object> values = new LinkedHashMap<>();
+		if (backup.enabled() != null) {
+			values.put("enabled", backup.enabled());
+		}
+		if (StringUtils.hasText(backup.schedule())) {
+			values.put("task", Map.of("schedule", backup.schedule()));
+		}
+		Map<String, Object> s3 = new LinkedHashMap<>();
+		if (StringUtils.hasText(namespace)) {
+			s3.put("bucket", namespace);
+		}
+		String prefix = backupPrefix(releaseName, chartFullname(DatabaseEngine.MONGODB, releaseName));
+		if (StringUtils.hasText(prefix)) {
+			s3.put("prefix", prefix);
+		}
+		String credentialSecret = releaseScopedSecretName(backup.credentialSecret(), releaseName);
+		if (StringUtils.hasText(credentialSecret)) {
+			s3.put("credentialSecret", credentialSecret);
+		}
+		if (!s3.isEmpty()) {
+			values.put("s3", s3);
+		}
+		return values;
+	}
+
+	private Map<String, Object> renderMysqlBackup(
+		com.example.demo.cluster.dto.DatabaseBackupRequest backup,
+		String namespace,
+		String releaseName,
+		String clusterName
+	) {
+		Map<String, Object> values = new LinkedHashMap<>();
+		if (backup.enabled() != null) {
+			values.put("enabled", backup.enabled());
+		}
+		if (StringUtils.hasText(backup.schedule())) {
+			values.put("schedule", Map.of("cron", backup.schedule()));
+		}
+		Map<String, Object> s3 = new LinkedHashMap<>();
+		if (StringUtils.hasText(namespace)) {
+			s3.put("bucket", namespace);
+		}
+		String prefix = backupPrefix(releaseName, chartFullname(DatabaseEngine.MYSQL, releaseName));
+		if (StringUtils.hasText(prefix)) {
+			s3.put("prefix", prefix);
+		}
+		String credentialSecret = releaseScopedSecretName(backup.credentialSecret(), releaseName);
+		if (StringUtils.hasText(credentialSecret)) {
+			s3.put("credentialSecret", credentialSecret);
+		}
+		if (!s3.isEmpty()) {
+			values.put("s3", s3);
+		}
+		return values;
+	}
+
+	private Map<String, Object> renderCassandraBackup(
+		com.example.demo.cluster.dto.DatabaseBackupRequest backup,
+		String namespace,
+		String releaseName,
+		String clusterName
+	) {
+		Map<String, Object> values = new LinkedHashMap<>();
+		if (backup.enabled() != null) {
+			values.put("enabled", backup.enabled());
+		}
+		if (StringUtils.hasText(backup.schedule())) {
+			values.put("schedule", Map.of("cron", backup.schedule()));
+		}
+		Map<String, Object> s3 = new LinkedHashMap<>();
+		if (StringUtils.hasText(namespace)) {
+			s3.put("bucket", namespace);
+		}
+		String prefix = backupPrefix(releaseName, chartFullname(DatabaseEngine.CASSANDRA, releaseName));
+		if (StringUtils.hasText(prefix)) {
+			s3.put("prefix", prefix);
+		}
+		String credentialSecret = releaseScopedSecretName(backup.credentialSecret(), releaseName);
+		if (StringUtils.hasText(credentialSecret)) {
+			s3.put("credentialSecret", credentialSecret);
+		}
+		if (!s3.isEmpty()) {
+			values.put("s3", s3);
+		}
+		return values;
+	}
+
+	private String postgresBackupDestinationPath(String namespace, String releaseName, String chartFullname) {
+		if (!StringUtils.hasText(namespace)) {
+			return null;
+		}
+		StringBuilder path = new StringBuilder("s3://").append(namespace).append("/");
+		if (StringUtils.hasText(releaseName)) {
+			path.append(releaseName).append("/");
+		}
+		if (StringUtils.hasText(chartFullname)) {
+			path.append(chartFullname);
+		}
+		return path.toString();
+	}
+
+	private String backupPrefix(String releaseName, String chartFullname) {
+		if (!StringUtils.hasText(releaseName)) {
+			return null;
+		}
+		if (StringUtils.hasText(chartFullname)) {
+			return releaseName + "/" + chartFullname;
+		}
+		return releaseName;
+	}
+
+	private String chartFullname(DatabaseEngine engine, String releaseName) {
+		if (!StringUtils.hasText(releaseName) || engine == null) {
+			return null;
+		}
+		return switch (engine) {
+			case POSTGRESQL -> releaseName + "-postgresql";
+			case MONGODB -> releaseName + "-mongodb";
+			case MYSQL -> releaseName + "-mysql";
+			case REDIS -> releaseName + "-redis";
+			case CASSANDRA -> releaseName + "-cassandra";
+		};
+	}
+
+	private String releaseScopedSecretName(String secretName, String releaseName) {
+		if (!StringUtils.hasText(secretName)) {
+			return null;
+		}
+		if (!StringUtils.hasText(releaseName)) {
+			return secretName;
+		}
+		if ("minio-credentials".equals(secretName) || "minio-backup-credentials".equals(secretName)) {
+			return secretName + "-" + releaseName;
+		}
+		return secretName;
 	}
 
 	private Map<String, Object> storage(DatabaseInstanceRequest database) {
@@ -335,10 +632,6 @@ public class HelmValuesService {
 			resources.put("limits", limits);
 		}
 		return resources;
-	}
-
-	private boolean hasAnyPublicHostnames(DatabaseInstanceRequest database) {
-		return database.publicHostnames() != null && !database.publicHostnames().isEmpty();
 	}
 
 	@SuppressWarnings("unchecked")

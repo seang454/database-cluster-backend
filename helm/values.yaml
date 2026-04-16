@@ -1,0 +1,548 @@
+# =============================================================================
+# db-cluster v4 — Operator-based Umbrella Chart Values
+# Cluster-wide knobs for the database app chart. Bootstrap layers live in setup.sh.
+# =============================================================================
+
+# This file tunes cluster-wide behavior: ingress, DNS, database exposure,
+# and each database subchart's defaults.
+
+# =============================================================================
+# GENERIC INGRESS
+# =============================================================================
+ingress:
+  # Default ingress class for HTTP services.
+  className: nginx
+
+# =============================================================================
+# EXTERNAL TCP PROXY (HAProxy)
+# Shared TCP entrypoint for database traffic without using a cloud LoadBalancer.
+# Runs separately from the database operators and forwards to internal services.
+# =============================================================================
+externalTcpProxy:
+  # Shared TCP entrypoint for all database ports exposed outside the cluster.
+  enabled: true
+  image:
+    # HAProxy is the single L4 hop that forwards public DB traffic to cluster services.
+    repository: haproxy
+    tag: "3.0-alpine"
+    pullPolicy: IfNotPresent
+  replicas: 1
+  # Recreate avoids hostPort collisions when the single pinned proxy pod is replaced.
+  strategy: Recreate
+  # Bind HAProxy directly to the node network so the node's public IP can
+  # accept raw database TCP traffic such as 5432.
+  hostNetwork: true
+  dnsPolicy: ClusterFirstWithHostNet
+  # Leave empty by default so the proxy can land on any suitable node.
+  # Set labels here only if you intentionally want to pin public DB traffic
+  # to a specific subset of nodes.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  resources: {}
+  service:
+    enabled: false
+    type: ClusterIP
+  expose:
+    # Enable only the database ports you actually want HAProxy to publish.
+    postgresql: true
+    mysql: true
+    mongodb: true
+    redis: true
+    cassandra: true
+  ports:
+    # Native database ports preserved so clients can connect without port translation.
+    postgresql: 5432
+    mysql: 3306
+    mongodb: 27017
+    redis: 6379
+    # Cassandra uses the standard 9042 port through HAProxy.
+    cassandra: 9042
+  timeouts:
+    connect: 10s
+    client: 1m
+    server: 1m
+
+# =============================================================================
+# POSTGRESQL — CloudNativePG Operator
+# =============================================================================
+postgresql:
+  # PostgreSQL stays disabled here unless you explicitly turn it on.
+  enabled: false
+  operator:
+    enabled: false
+  credentials:
+    superuser: ""
+    admin: ""
+    standby: ""
+  externalAccess:
+    # LoadBalancer mode is kept for clusters that want direct public exposure.
+    enabled: false
+    serviceType: LoadBalancer
+    serviceName: ""
+    externalIP: ""
+    externalIPs: []
+    loadBalancerClass: ""
+    loadBalancerSourceRanges: []
+    annotations: {}
+    labels: {}
+    updateStrategy: patch
+    publicHostnames:
+      - postgres-db.seang.shop
+  tls:
+    # Normal TLS for external clients; keep false only if you want mTLS.
+    enabled: true
+    mode: operator
+    existingSecretName: ""
+    existingCASecretName: ""
+    certManager:
+      generateCA: true
+      issuer:
+        name: ""
+        kind: ClusterIssuer
+        group: cert-manager.io
+
+  cluster:
+    instances: 3
+    imageName: ghcr.io/cloudnative-pg/postgresql:16.2
+
+    postgresql:
+      max_connections: "100"
+      shared_buffers: "256MB"
+      effective_cache_size: "512MB"
+      maintenance_work_mem: "64MB"
+      checkpoint_completion_target: "0.9"
+      wal_buffers: "16MB"
+      default_statistics_target: "100"
+      random_page_cost: "1.1"
+      effective_io_concurrency: "200"
+      work_mem: "4MB"
+      wal_level: "logical"
+      log_connections: "off"
+      log_disconnections: "off"
+      log_duration: "off"
+      log_min_duration_statement: "1000"
+
+    bootstrap:
+      database: appdb
+      owner: appuser
+      encoding: UTF8
+
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
+        cpu: "1500m"
+        memory: "2Gi"
+
+    podAntiAffinityType: preferred
+    whenUnsatisfiable: DoNotSchedule
+    switchoverDelay: 60
+    failoverDelay: 0
+    monitoring:
+      enabled: false
+
+  storage:
+    # Persistent volume size for each PostgreSQL instance.
+    size: 10Gi
+    storageClass: longhorn
+    # WAL gets its own volume so write-ahead logs do not contend with main data.
+    wal:
+      enabled: true
+      size: 2Gi
+
+  backup:
+    # Default backup target is the MinIO release installed by setup.sh.
+    # Uses one bucket per Helm release, with a PostgreSQL-specific prefix.
+    enabled: true
+    # Supported providers in this chart: s3, gcs
+    provider: s3
+    destinationPath: "s3://{{ .Release.Namespace }}/{{ .Release.Name }}/{{ include \"postgresql.fullname\" . }}"
+    # Use endpointURL for S3-compatible targets such as MinIO.
+    endpointURL: "http://my-minio-minio.storage.svc:9000"
+    # Optional CA bundle secret for private/self-signed HTTPS endpoints.
+    endpointCA:
+      secretName: ""
+      secretKey: ca.crt
+    # Used when provider=gcs.
+    credentialSecret: "gcs-credentials"
+    # Used when provider=s3.
+    s3Credentials:
+      accessKeyId:
+        secretName: ""
+        key: root-user
+      secretAccessKey:
+        secretName: ""
+        key: root-password
+      region:
+        secretName: ""
+        key: region
+    retentionPolicy: "7d"
+    schedule:
+      enabled: true
+      # CloudNativePG uses a 6-field cron format with seconds.
+      # Daily at 02:00 UTC: 0 0 2 * * *
+      # Every 6 hours:      0 0 */6 * * *
+      # Weekly at Sun 03:00 UTC: 0 0 3 * * 0
+      cron: "0 * * * * *"
+      immediate: false
+      suspend: false
+      backupOwnerReference: self
+
+# =============================================================================
+# MONGODB — Percona Operator for MongoDB
+# =============================================================================
+mongodb:
+  # MongoDB replica-set values and TLS behavior.
+  enabled: false
+  operator:
+    enabled: false
+  credentials:
+    clusterAdminUser: clusterAdmin
+    clusterAdminPassword: ""
+    userAdminUser: userAdmin
+    userAdminPassword: ""
+    clusterMonitorUser: clusterMonitor
+    clusterMonitorPassword: ""
+    databaseAdminUser: databaseAdmin
+    databaseAdminPassword: ""
+    backupUser: backup
+    backupPassword: ""
+    replicationKey: ""
+  externalAccess:
+    enabled: false
+    replicaSetHorizons:
+      enabled: true
+      basePort: 27017
+      serviceType: ClusterIP
+    publicHostnames:
+      - mongo-db-0.seang.shop
+      - mongo-db-1.seang.shop
+      - mongo-db-2.seang.shop
+  tls:
+    enabled: false
+    mode: certManager
+    sslSecretName: ""
+    sslInternalSecretName: ""
+    certManager:
+      generateCA: false
+      issuer:
+        name: ""
+        kind: ClusterIssuer
+        group: cert-manager.io
+
+  cluster:
+    # Replica set members plus internal TLS/X.509 behavior for the Percona operator.
+    crVersion: "1.22.0"
+    instances: 3
+    image: percona/percona-server-mongodb:7.0.30-16
+    configuration: |
+      net:
+        tls:
+          allowConnectionsWithoutCertificates: true
+          clusterAuthX509:
+            attributes: O=MongoDB, OU=MongoDB Server
+    env:
+      - name: PATH
+        value: /opt/percona:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    sidecars:
+      - name: mongo-compat
+        image: busybox:1.36
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+          - |
+            cat >/opt/percona/mongo <<'EOW'
+            #!/bin/sh
+            exec /usr/bin/mongosh "$@"
+            EOW
+            chmod +x /opt/percona/mongo
+            sleep infinity
+        volumeMounts:
+          - name: bin
+            mountPath: /opt/percona
+    probes:
+      # MongoDB replica set bootstrap and user creation can take several
+      # minutes on Longhorn. The operator defaults are too aggressive and can
+      # push the pods into a restart loop before initialization settles.
+      livenessInitialDelaySeconds: 300
+      livenessTimeoutSeconds: 30
+      livenessPeriodSeconds: 30
+      livenessFailureThreshold: 10
+      livenessStartupDelaySeconds: 7200
+      readinessInitialDelaySeconds: 60
+      readinessTimeoutSeconds: 10
+      readinessPeriodSeconds: 10
+      readinessFailureThreshold: 30
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "1Gi"
+      limits:
+        cpu: "1500m"
+        memory: "3Gi"
+
+  storage:
+    # Size of each MongoDB member's persistent volume.
+    size: 10Gi
+    storageClass: longhorn
+
+  backup:
+    # Percona backup jobs use the namespace as the bucket and store backups
+    # under <release>/<cluster>.
+    enabled: true
+    storageType: minio
+    task:
+      name: daily-backup
+      schedule: "10 2 * * *"
+      compressionType: gzip
+    s3:
+      bucket: "{{ .Release.Namespace }}"
+      region: us-east-1
+      credentialSecret: ""
+      endpointURL: "http://my-minio-minio.storage.svc:9000"
+      prefix: "{{ .Release.Name }}/{{ include \"mongodb.fullname\" . }}"
+
+# =============================================================================
+# MYSQL — Percona Operator for MySQL (PXC)
+# =============================================================================
+mysql:
+  # MySQL/PXC values and external access settings.
+  enabled: false
+  operator:
+    enabled: false
+  credentials:
+    rootPassword: ""
+    replicationPassword: ""
+    monitorPassword: ""
+    clusterCheckPassword: ""
+  externalAccess:
+    # External hostnames are only used when the database is intentionally public.
+    enabled: false
+    loadBalancerClass: ""
+    loadBalancerSourceRanges: []
+    annotations: {}
+    labels: {}
+    # Add public DNS names here so cert-manager includes them in the database
+    # server certificate SANs. Example: mysql-db.example.com
+    publicHostnames:
+      - mysql-db.seang.shop
+  tls:
+    enabled: false
+    mode: certManager
+    sslSecretName: ""
+    sslInternalSecretName: ""
+    certManager:
+      generateCA: true
+      issuer:
+        name: ""
+        kind: ClusterIssuer
+        group: cert-manager.io
+
+  haproxy:
+    # The Percona operator enforces at least two HAProxy replicas as a safe
+    # default. Match that here to avoid endless reconciliation churn.
+    size: 2
+    readinessDelaySeconds: 30
+    readinessTimeoutSeconds: 10
+    livenessDelaySeconds: 120
+    livenessTimeoutSeconds: 10
+
+  cluster:
+    # PXC instances are sized for quorum and anti-affinity across nodes.
+    instances: 3
+    image: percona/percona-xtradb-cluster:8.0
+    probes:
+      # Longhorn-backed initial bootstrap can take several minutes. Give the
+      # first PXC node enough time to finish initializing before kubelet
+      # liveness checks kill it and force a full restart.
+      readinessDelaySeconds: 60
+      readinessTimeoutSeconds: 15
+      livenessDelaySeconds: 1200
+      livenessTimeoutSeconds: 15
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+      limits:
+        cpu: "1500m"
+        memory: "2Gi"
+
+  storage:
+    # Persistent volume size for the MySQL data directory.
+    size: 10Gi
+    storageClass: longhorn
+
+  backup:
+    # PXC backups use the namespace as the bucket and store backups under
+    # <release>/<cluster>.
+    enabled: true
+    schedule:
+      name: daily-backup
+      cron: "20 2 * * *"
+      keep: 7
+    s3:
+      bucket: "{{ .Release.Namespace }}"
+      region: us-east-1
+      credentialSecret: ""
+      endpointURL: "http://my-minio-minio.storage.svc:9000"
+      prefix: "{{ .Release.Name }}/{{ include \"mysql.fullname\" . }}"
+
+# =============================================================================
+# REDIS — OpsTree Redis Operator
+# =============================================================================
+redis:
+  # Redis cluster values and TLS settings.
+  enabled: false
+  operator:
+    enabled: false
+  auth:
+    password: ""
+  externalAccess:
+    # Public hostname for Redis when exposing it outside the cluster.
+    enabled: false
+    publicHostnames:
+      - redis-db.seang.shop
+  tls:
+    enabled: false
+    secretName: ""
+    caKey: ca.crt
+    certKey: tls.crt
+    privateKeyKey: tls.key
+    certManager:
+      generateCA: true
+      issuer:
+        name: ""
+        kind: ClusterIssuer
+        group: cert-manager.io
+
+  cluster:
+    # Redis is small and memory-sensitive, so requests stay modest.
+    instances: 3
+    image: redis:7.2-alpine
+    probes:
+      # The operator's default TLS exec probes only allow a 1s timeout, which
+      # is too aggressive during initial cluster bootstrap on Longhorn-backed
+      # storage. Give the first leader enough time to answer redis-cli --tls
+      # health checks so the StatefulSet can advance to the remaining members.
+      readinessInitialDelaySeconds: 30
+      readinessTimeoutSeconds: 10
+      readinessPeriodSeconds: 10
+      readinessFailureThreshold: 12
+      livenessInitialDelaySeconds: 120
+      livenessTimeoutSeconds: 10
+      livenessPeriodSeconds: 20
+      livenessFailureThreshold: 6
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "128Mi"
+      limits:
+        cpu: "500m"
+        memory: "1Gi"
+
+  storage:
+    # Smaller volume than the SQL databases because Redis data is usually lighter.
+    size: 5Gi
+    storageClass: longhorn
+
+  exporter:
+    # Exporter is off by default to keep the footprint down.
+    enabled: false
+    image: quay.io/opstree/redis-exporter:v1.44.0
+  # This Redis chart does not currently define a backup integration.
+  # Keep Redis persistence enabled, or add a separate snapshot/backup workflow.
+
+# =============================================================================
+# CASSANDRA — K8ssandra Operator
+# =============================================================================
+cassandra:
+  # Cassandra uses the chart-managed TLS bootstrap path.
+  enabled: false
+  operator:
+    enabled: false
+  credentials:
+    username: cassandra
+    password: ""
+  externalAccess:
+    # Public hostname used by HAProxy and the TLS bootstrap job.
+    enabled: true
+    publicHostnames:
+      - cassandra-db.seang.shop
+  tls:
+    enabled: true
+    # Encrypt client traffic; keep client cert auth off for normal external access.
+    clientEncryption: true
+    # Set to true only if you want mTLS for clients as well as internode encryption.
+    requireClientAuth: false
+    # Internode encryption is on by default because Cassandra recommends it.
+    internodeEncryption: all
+    # The subchart generates the JKS secrets automatically during Helm install/upgrade.
+    createSecrets: true
+    # When Cassandra is disabled, the next upgrade removes the datacenter and PVCs.
+    cleanupOnDisable: true
+    serverSecretName: cassandra-server-keystore-secret
+    clientSecretName: cassandra-client-trust-secret
+    serverSecret:
+      keystorePassword: "mypassword"
+      truststorePassword: "mypassword"
+
+    clientSecret:
+      keystorePassword: "mypassword"
+      truststorePassword: "mypassword"
+
+  cluster:
+    # Cassandra needs memory-heavy config-builder and logger sidecars to stay healthy.
+    instances: 3
+    image: k8ssandra/cass-management-api:4.1.3
+    config:
+      clusterName: seang-cassandra
+      datacenter: dc1
+    resources:
+      requests:
+        cpu: "200m"
+        memory: "1Gi"
+      limits:
+        cpu: "1"
+        memory: "3Gi"
+    configBuilderResources:
+      requests:
+        cpu: "100m"
+        memory: "128Mi"
+      limits:
+        cpu: "500m"
+        memory: "384Mi"
+    systemLoggerResources:
+      requests:
+        cpu: "20m"
+        memory: "64Mi"
+      limits:
+        memory: "128Mi"
+
+  storage:
+    # Persistent volume size for each Cassandra node.
+    size: 10Gi
+    storageClass: longhorn
+
+  backup:
+    # Medusa uses the namespace as the bucket and stores backups under
+    # <release>/<cluster>.
+    enabled: true
+    medusaImage: k8ssandra/medusa:0.14.0
+    schedule:
+      enabled: true
+      cron: "30 3 * * *"
+      disabled: false
+      backupType: differential
+    s3:
+      provider: s3_compatible
+      bucket: "{{ .Release.Namespace }}"
+      region: us-east-1
+      credentialSecret: ""
+      prefix: "{{ .Release.Name }}/{{ include \"cassandra.fullname\" . }}"
+      host: my-minio-minio.storage.svc
+      port: 9000
+      secure: false
+

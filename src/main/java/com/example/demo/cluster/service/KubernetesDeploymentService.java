@@ -1,7 +1,7 @@
 package com.example.demo.cluster.service;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -10,10 +10,11 @@ import io.fabric8.kubernetes.api.model.GenericKubernetesResource;
 import io.fabric8.kubernetes.api.model.NamespaceBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import com.example.demo.cluster.config.ClusterDeploymentProperties;
-import com.example.demo.cluster.domain.enumtype.DatabaseEngine;
 import com.example.demo.cluster.dto.ClusterDeploymentRequest;
 import com.example.demo.cluster.dto.DatabaseInstanceRequest;
 import com.example.demo.cluster.dto.DeploymentSecretsRequest;
+import com.example.demo.cluster.domain.DatabaseBackup;
+import com.example.demo.cluster.domain.enumtype.DatabaseEngine;
 import com.example.demo.cluster.exception.ClusterDeploymentException;
 import com.example.demo.cluster.model.CommandResult;
 import com.example.demo.cluster.model.DeploymentTarget;
@@ -37,47 +38,46 @@ public class KubernetesDeploymentService {
 	private static final String K8SSANDRA_KIND = "K8ssandraCluster";
 
 	private final KubernetesClient client;
-	private final KubernetesSecretService secretService;
 	private final DeploymentNamingService namingService;
 	private final HelmValuesService helmValuesService;
 	private final HelmCommandService helmCommandService;
 	private final DeploymentReadinessService deploymentReadinessService;
+	private final MinioBucketService minioBucketService;
 	private final ClusterDeploymentProperties properties;
 
 	public KubernetesDeploymentService(
 		KubernetesClient client,
-		KubernetesSecretService secretService,
 		DeploymentNamingService namingService,
 		HelmValuesService helmValuesService,
 		HelmCommandService helmCommandService,
 		DeploymentReadinessService deploymentReadinessService,
+		MinioBucketService minioBucketService,
 		ClusterDeploymentProperties properties
 	) {
 		this.client = client;
-		this.secretService = secretService;
 		this.namingService = namingService;
 		this.helmValuesService = helmValuesService;
 		this.helmCommandService = helmCommandService;
 		this.deploymentReadinessService = deploymentReadinessService;
+		this.minioBucketService = minioBucketService;
 		this.properties = properties;
 	}
 
 	public KubernetesDeploymentResult deploy(ClusterDeploymentRequest request) {
 		DatabaseInstanceRequest database = requireDatabase(request);
 		DeploymentTarget target = namingService.resolve(request);
-		String cloudflareApiToken = resolveCloudflareApiToken(request.secrets());
 		Instant startedAt = Instant.now();
 		Path overrideValuesFile = null;
 		try {
 			ensureNamespace(target.namespace());
 			validateSecrets(database.engine(), request.secrets());
-			secretService.ensureCloudflareSecretIfPresent(target, cloudflareApiToken);
 			overrideValuesFile = helmValuesService.renderOverrideValues(request);
 			CommandResult commandResult = helmCommandService.upgradeInstall(target.releaseName(), target.namespace(), overrideValuesFile);
 			Instant finishedAt = Instant.now();
 			if (!commandResult.successful()) {
 				return failedResult(target, commandResult, overrideValuesFile, startedAt, finishedAt);
 			}
+			minioBucketService.ensureNamespaceBucket(target.namespace(), target.releaseName());
 			try {
 				deploymentReadinessService.verifyDeployment(target, database.engine());
 			}
@@ -162,6 +162,49 @@ public class KubernetesDeploymentService {
 		}
 		catch (RuntimeException exception) {
 			throw new ClusterDeploymentException("Failed to delete Kubernetes resources: " + exception.getMessage(), exception);
+		}
+	}
+
+	public KubernetesDeploymentResult updateBackupSettings(DeploymentTarget target, DatabaseEngine engine, DatabaseBackup backup) {
+		Instant startedAt = Instant.now();
+		Path overrideValuesFile = null;
+		try {
+			String clusterName = backup != null && backup.getDatabaseInstance() != null && backup.getDatabaseInstance().getCluster() != null
+				? backup.getDatabaseInstance().getCluster().getName()
+				: null;
+			overrideValuesFile = java.nio.file.Files.createTempFile("db-cluster-backup-", ".yaml");
+			java.nio.file.Files.writeString(
+				overrideValuesFile,
+				helmValuesService.renderBackupOverride(engine, backup, target.namespace(), target.releaseName(), clusterName)
+			);
+			CommandResult commandResult = helmCommandService.upgradeInstallReuseValues(
+				target.releaseName(),
+				target.namespace(),
+				overrideValuesFile
+			);
+			Instant finishedAt = Instant.now();
+			if (!commandResult.successful()) {
+				return failedResult(target, commandResult, overrideValuesFile, startedAt, finishedAt);
+			}
+			minioBucketService.ensureNamespaceBucket(target.namespace(), target.releaseName());
+			return new KubernetesDeploymentResult(
+				target.releaseName(),
+				target.namespace(),
+				helmCommandSummary(target.releaseName(), target.namespace()),
+				commandResult.exitCode(),
+				commandResult.successful(),
+				valuesFileSummary(overrideValuesFile),
+				commandResult.stdout(),
+				commandResult.stderr(),
+				startedAt,
+				finishedAt
+			);
+		}
+		catch (Exception exception) {
+			throw new ClusterDeploymentException("Failed to update backup settings: " + rootCauseMessage(exception), exception);
+		}
+		finally {
+			cleanupTempFile(overrideValuesFile);
 		}
 	}
 
@@ -297,13 +340,6 @@ public class KubernetesDeploymentService {
 			case REDIS -> requireText(secrets.redisPassword(), "redisPassword");
 			case CASSANDRA -> requireText(secrets.cassandraPassword(), "cassandraPassword");
 		}
-	}
-
-	private String resolveCloudflareApiToken(DeploymentSecretsRequest secrets) {
-		if (secrets != null && StringUtils.hasText(secrets.cloudflareApiToken())) {
-			return secrets.cloudflareApiToken();
-		}
-		return properties.getDefaultCloudflareApiToken();
 	}
 
 	private void requireText(String value, String field) {

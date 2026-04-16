@@ -10,4 +10,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface ClusterRepository extends JpaRepository<Cluster, UUID> {
 
 	Optional<Cluster> findByName(String name);
+
+	Optional<Cluster> findByDeploymentName(String deploymentName);
 }

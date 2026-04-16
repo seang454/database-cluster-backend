@@ -32,7 +32,7 @@ public class Cluster extends BaseEntity {
 
 	@Enumerated(EnumType.STRING)
 	@Column(length = 30)
-	private ClusterEnvironment environment;
+	private ClusterEnvironment environment = ClusterEnvironment.PRODUCTION;
 
 	@Column(length = 255)
 	private String domain;
