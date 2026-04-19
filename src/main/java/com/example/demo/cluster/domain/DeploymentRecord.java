@@ -11,13 +11,15 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.JoinColumn;
-import jakarta.persistence.Lob;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Getter
 @Setter
@@ -56,13 +58,15 @@ public class DeploymentRecord extends BaseEntity {
 	@Column(name = "exit_code")
 	private Integer exitCode;
 
-	@Lob
-	@Column(name = "command_text")
+	@JdbcTypeCode(SqlTypes.LONGVARCHAR)
+	@Column(name = "command_text", columnDefinition = "text")
 	private String commandText;
 
-	@Lob
+	@JdbcTypeCode(SqlTypes.LONGVARCHAR)
+	@Column(columnDefinition = "text")
 	private String stdout;
 
-	@Lob
+	@JdbcTypeCode(SqlTypes.LONGVARCHAR)
+	@Column(columnDefinition = "text")
 	private String stderr;
 }

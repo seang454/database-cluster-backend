@@ -82,6 +82,18 @@ kubernetes.client.mode=AUTO
 kubernetes.client.kubeconfig-path=C:/Users/your-user/.kube/config
 ```
 
+### Local Secrets
+
+For local development, you can keep private values in a root-level `.env` file. The app loads it before Spring starts, then maps values into system properties.
+
+Example:
+
+```env
+CLOUDFLARE_API_TOKEN=your_token_here
+```
+
+You can copy [.env.example](D:\CSTADPreUniversityTraining\ITP\spring\db-cluster\demo\.env.example) and rename it to `.env`.
+
 ## How Spring Uses the Config
 
 The project uses `@ConfigurationProperties`, not `@Value`, for grouped config.

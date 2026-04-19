@@ -13,5 +13,7 @@ public interface DeploymentRecordRepository extends JpaRepository<DeploymentReco
 
 	List<DeploymentRecord> findByReleaseNameAndNamespaceOrderByCreatedAtDesc(String releaseName, String namespace);
 
+	List<DeploymentRecord> findByNamespaceOrderByCreatedAtDesc(String namespace);
+
 	void deleteByClusterId(UUID clusterId);
 }

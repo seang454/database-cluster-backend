@@ -12,8 +12,10 @@ public class ClusterDeploymentProperties {
 	private String chartVersion;
 	private String helmExecutable = "helm";
 	private String helmTimeout = "30m";
+	private String kubectlExecutable = "kubectl";
 	private String minioEndpointUrl = "http://my-minio-minio.storage.svc:9000";
 	private String minioBucketTimeout = "2m";
+	private String minioCredentialsNamespace = "storage";
 	private String minioCredentialsSecretPrefix = "minio-credentials";
 	private String minioCredentialsAccessKey = "root-user";
 	private String minioCredentialsSecretKey = "root-password";
@@ -80,6 +82,14 @@ public class ClusterDeploymentProperties {
 		this.helmTimeout = helmTimeout;
 	}
 
+	public String getKubectlExecutable() {
+		return kubectlExecutable;
+	}
+
+	public void setKubectlExecutable(String kubectlExecutable) {
+		this.kubectlExecutable = kubectlExecutable;
+	}
+
 	public String getMinioEndpointUrl() {
 		return minioEndpointUrl;
 	}
@@ -94,6 +104,14 @@ public class ClusterDeploymentProperties {
 
 	public void setMinioBucketTimeout(String minioBucketTimeout) {
 		this.minioBucketTimeout = minioBucketTimeout;
+	}
+
+	public String getMinioCredentialsNamespace() {
+		return minioCredentialsNamespace;
+	}
+
+	public void setMinioCredentialsNamespace(String minioCredentialsNamespace) {
+		this.minioCredentialsNamespace = minioCredentialsNamespace;
 	}
 
 	public String getMinioCredentialsSecretPrefix() {

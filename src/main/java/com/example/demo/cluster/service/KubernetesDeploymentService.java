@@ -5,6 +5,7 @@ import java.nio.file.Files;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executor;
 
 import io.fabric8.kubernetes.api.model.GenericKubernetesResource;
 import io.fabric8.kubernetes.api.model.NamespaceBuilder;
@@ -22,9 +23,13 @@ import com.example.demo.cluster.model.KubernetesDeploymentResult;
 
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Service
 public class KubernetesDeploymentService {
+
+	private static final Logger log = LoggerFactory.getLogger(KubernetesDeploymentService.class);
 
 	private static final String CNPG_API_VERSION = "postgresql.cnpg.io/v1";
 	private static final String CNPG_KIND = "Cluster";
@@ -41,8 +46,10 @@ public class KubernetesDeploymentService {
 	private final DeploymentNamingService namingService;
 	private final HelmValuesService helmValuesService;
 	private final HelmCommandService helmCommandService;
+	private final KubectlCommandService kubectlCommandService;
 	private final DeploymentReadinessService deploymentReadinessService;
 	private final MinioBucketService minioBucketService;
+	private final Executor readinessExecutor;
 	private final ClusterDeploymentProperties properties;
 
 	public KubernetesDeploymentService(
@@ -50,16 +57,20 @@ public class KubernetesDeploymentService {
 		DeploymentNamingService namingService,
 		HelmValuesService helmValuesService,
 		HelmCommandService helmCommandService,
+		KubectlCommandService kubectlCommandService,
 		DeploymentReadinessService deploymentReadinessService,
 		MinioBucketService minioBucketService,
+		Executor readinessExecutor,
 		ClusterDeploymentProperties properties
 	) {
 		this.client = client;
 		this.namingService = namingService;
 		this.helmValuesService = helmValuesService;
 		this.helmCommandService = helmCommandService;
+		this.kubectlCommandService = kubectlCommandService;
 		this.deploymentReadinessService = deploymentReadinessService;
 		this.minioBucketService = minioBucketService;
+		this.readinessExecutor = readinessExecutor;
 		this.properties = properties;
 	}
 
@@ -77,20 +88,8 @@ public class KubernetesDeploymentService {
 			if (!commandResult.successful()) {
 				return failedResult(target, commandResult, overrideValuesFile, startedAt, finishedAt);
 			}
-			minioBucketService.ensureNamespaceBucket(target.namespace(), target.releaseName());
-			try {
-				deploymentReadinessService.verifyDeployment(target, database.engine());
-			}
-			catch (ClusterDeploymentException exception) {
-				return failedResult(
-					target,
-					commandResult,
-					overrideValuesFile,
-					startedAt,
-					Instant.now(),
-					exception.getMessage()
-				);
-			}
+			minioBucketService.ensureNamespaceBucket(target.namespace(), target.releaseName(), database.engine());
+			scheduleReadinessCheck(target, database.engine());
 			finishedAt = Instant.now();
 			return new KubernetesDeploymentResult(
 				target.releaseName(),
@@ -167,44 +166,30 @@ public class KubernetesDeploymentService {
 
 	public KubernetesDeploymentResult updateBackupSettings(DeploymentTarget target, DatabaseEngine engine, DatabaseBackup backup) {
 		Instant startedAt = Instant.now();
-		Path overrideValuesFile = null;
 		try {
-			String clusterName = backup != null && backup.getDatabaseInstance() != null && backup.getDatabaseInstance().getCluster() != null
-				? backup.getDatabaseInstance().getCluster().getName()
-				: null;
-			overrideValuesFile = java.nio.file.Files.createTempFile("db-cluster-backup-", ".yaml");
-			java.nio.file.Files.writeString(
-				overrideValuesFile,
-				helmValuesService.renderBackupOverride(engine, backup, target.namespace(), target.releaseName(), clusterName)
-			);
-			CommandResult commandResult = helmCommandService.upgradeInstallReuseValues(
-				target.releaseName(),
-				target.namespace(),
-				overrideValuesFile
-			);
-			Instant finishedAt = Instant.now();
-			if (!commandResult.successful()) {
-				return failedResult(target, commandResult, overrideValuesFile, startedAt, finishedAt);
+			if (engine == DatabaseEngine.POSTGRESQL) {
+				patchCloudNativePgScheduledBackup(target, backup);
 			}
-			minioBucketService.ensureNamespaceBucket(target.namespace(), target.releaseName());
+			else {
+				log.info("Backup settings persistence updated for {} in {}, but no live operator patch is defined for {}",
+					target.releaseName(), target.namespace(), engine);
+			}
+			Instant finishedAt = Instant.now();
 			return new KubernetesDeploymentResult(
 				target.releaseName(),
 				target.namespace(),
-				helmCommandSummary(target.releaseName(), target.namespace()),
-				commandResult.exitCode(),
-				commandResult.successful(),
-				valuesFileSummary(overrideValuesFile),
-				commandResult.stdout(),
-				commandResult.stderr(),
+				List.of("kubectl", "apply", "scheduledbackup"),
+				0,
+				true,
+				null,
+				"Backup settings patched in the live operator resource",
+				"",
 				startedAt,
 				finishedAt
 			);
 		}
 		catch (Exception exception) {
 			throw new ClusterDeploymentException("Failed to update backup settings: " + rootCauseMessage(exception), exception);
-		}
-		finally {
-			cleanupTempFile(overrideValuesFile);
 		}
 	}
 
@@ -327,6 +312,108 @@ public class KubernetesDeploymentService {
 		}
 		catch (Exception ignored) {
 		}
+	}
+
+	private void patchCloudNativePgScheduledBackup(DeploymentTarget target, DatabaseBackup backup) {
+		String clusterName = target.releaseName() + "-postgresql";
+		List<io.fabric8.kubernetes.api.model.GenericKubernetesResource> scheduledBackups = client.genericKubernetesResources(
+				"postgresql.cnpg.io/v1",
+				"ScheduledBackup")
+			.inNamespace(target.namespace())
+			.list()
+			.getItems();
+		boolean patched = false;
+		for (io.fabric8.kubernetes.api.model.GenericKubernetesResource resource : scheduledBackups) {
+			if (!isScheduledBackupForCluster(resource, clusterName)) {
+				continue;
+			}
+			String patchJson = buildScheduledBackupPatchJson(backup);
+			CommandResult patchResult = kubectlCommandService.patchMerge(
+				"scheduledbackup",
+				resource.getMetadata().getName(),
+				target.namespace(),
+				patchJson
+			);
+			if (!patchResult.successful()) {
+				throw new ClusterDeploymentException(
+					"kubectl patch failed for ScheduledBackup " + resource.getMetadata().getName() + ": " + patchResult.stderr()
+				);
+			}
+			patched = true;
+		}
+		if (!patched && backup != null && Boolean.TRUE.equals(backup.getEnabled())) {
+			log.warn("No CloudNativePG ScheduledBackup resource was found for {} in {}", target.releaseName(), target.namespace());
+		}
+	}
+
+	private String buildScheduledBackupPatchJson(DatabaseBackup backup) {
+		boolean suspended = backup == null || !Boolean.TRUE.equals(backup.getEnabled());
+		StringBuilder json = new StringBuilder();
+		json.append("{\"spec\":{");
+		json.append("\"suspend\":").append(suspended);
+		if (backup != null && StringUtils.hasText(backup.getSchedule())) {
+			json.append(",\"schedule\":\"").append(escapeJson(backup.getSchedule())).append("\"");
+		}
+		json.append("}}");
+		return json.toString();
+	}
+
+	private String escapeJson(String value) {
+		if (value == null) {
+			return "";
+		}
+		StringBuilder escaped = new StringBuilder(value.length());
+		for (char ch : value.toCharArray()) {
+			switch (ch) {
+				case '\\' -> escaped.append("\\\\");
+				case '"' -> escaped.append("\\\"");
+				case '\b' -> escaped.append("\\b");
+				case '\f' -> escaped.append("\\f");
+				case '\n' -> escaped.append("\\n");
+				case '\r' -> escaped.append("\\r");
+				case '\t' -> escaped.append("\\t");
+				default -> escaped.append(ch);
+			}
+		}
+		return escaped.toString();
+	}
+
+	private boolean isScheduledBackupForCluster(io.fabric8.kubernetes.api.model.GenericKubernetesResource resource, String clusterName) {
+		Object specObject = resource.getAdditionalProperties() != null ? resource.getAdditionalProperties().get("spec") : null;
+		if (!(specObject instanceof Map<?, ?> spec)) {
+			return false;
+		}
+		Object clusterObject = spec.get("cluster");
+		if (!(clusterObject instanceof Map<?, ?> cluster)) {
+			return false;
+		}
+		Object nameObject = cluster.get("name");
+		return clusterName.equals(String.valueOf(nameObject));
+	}
+
+	private Object readNestedValue(io.fabric8.kubernetes.api.model.GenericKubernetesResource resource, String parentKey, String childKey) {
+		if (resource.getAdditionalProperties() == null) {
+			return null;
+		}
+		Object parent = resource.getAdditionalProperties().get(parentKey);
+		if (!(parent instanceof Map<?, ?> map)) {
+			return null;
+		}
+		return map.get(childKey);
+	}
+
+	private void scheduleReadinessCheck(DeploymentTarget target, DatabaseEngine engine) {
+		readinessExecutor.execute(() -> {
+			try {
+				deploymentReadinessService.verifyDeployment(target, engine);
+				org.slf4j.LoggerFactory.getLogger(KubernetesDeploymentService.class)
+					.info("Deployment became ready for {} in {}", target.releaseName(), target.namespace());
+			}
+			catch (RuntimeException exception) {
+				org.slf4j.LoggerFactory.getLogger(KubernetesDeploymentService.class)
+					.warn("Background readiness check failed for {} in {}: {}", target.releaseName(), target.namespace(), exception.getMessage());
+			}
+		});
 	}
 
 	private void validateSecrets(DatabaseEngine engine, DeploymentSecretsRequest secrets) {

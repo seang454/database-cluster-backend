@@ -7,6 +7,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.nio.file.Path;
+import java.util.concurrent.Executor;
 
 import io.fabric8.kubernetes.client.KubernetesClient;
 import com.example.demo.cluster.config.ClusterDeploymentProperties;
@@ -45,11 +46,15 @@ class KubernetesDeploymentServiceTest {
 	private HelmCommandService helmCommandService;
 
 	@Mock
+	private KubectlCommandService kubectlCommandService;
+
+	@Mock
 	private DeploymentReadinessService deploymentReadinessService;
 
 	@Mock
 	private MinioBucketService minioBucketService;
 
+	private Executor readinessExecutor;
 	private ClusterDeploymentProperties properties;
 	private KubernetesDeploymentService kubernetesDeploymentService;
 
@@ -59,13 +64,16 @@ class KubernetesDeploymentServiceTest {
 		properties.setChartPath("oci://ghcr.io/seang454/db-cluster");
 		properties.setChartVersion("4.0.1");
 		properties.setHelmExecutable("helm");
+		readinessExecutor = Runnable::run;
 		kubernetesDeploymentService = new KubernetesDeploymentService(
 			kubernetesClient,
 			deploymentNamingService,
 			helmValuesService,
 			helmCommandService,
+			kubectlCommandService,
 			deploymentReadinessService,
 			minioBucketService,
+			readinessExecutor,
 			properties
 		);
 	}
@@ -113,7 +121,7 @@ class KubernetesDeploymentServiceTest {
 		assertThat(result.exitCode()).isEqualTo(1);
 		assertThat(result.stderr()).contains("job failed");
 		verify(deploymentReadinessService, never()).verifyDeployment(any(), any());
-		verify(minioBucketService, never()).ensureNamespaceBucket(any(), any());
+		verify(minioBucketService, never()).ensureNamespaceBucket(any(), any(), any());
 	}
 
 	@Test
@@ -156,7 +164,7 @@ class KubernetesDeploymentServiceTest {
 		KubernetesDeploymentResult result = kubernetesDeploymentService.deploy(request);
 
 		assertThat(result.successful()).isTrue();
-		verify(minioBucketService).ensureNamespaceBucket("ns-my-db", "db-my-db");
+		verify(minioBucketService).ensureNamespaceBucket("ns-my-db", "db-my-db", DatabaseEngine.POSTGRESQL);
 		verify(deploymentReadinessService).verifyDeployment(new DeploymentTarget("db-my-db", "ns-my-db"), DatabaseEngine.POSTGRESQL);
 	}
 }

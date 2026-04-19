@@ -12,13 +12,15 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
-import jakarta.persistence.Lob;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Getter
 @Setter
@@ -43,10 +45,14 @@ public class Cluster extends BaseEntity {
 	@Column(name = "deployment_name", length = 100)
 	private String deploymentName;
 
+	@Column(name = "deployment_namespace", length = 100)
+	private String deploymentNamespace;
+
 	@Embedded
 	private ClusterPlatformConfig platformConfig = new ClusterPlatformConfig();
 
-	@Lob
+	@JdbcTypeCode(SqlTypes.LONGVARCHAR)
+	@Column(columnDefinition = "text")
 	private String notes;
 
 	@OneToMany(mappedBy = "cluster", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)

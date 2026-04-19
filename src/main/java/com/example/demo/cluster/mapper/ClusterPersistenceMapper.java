@@ -34,6 +34,7 @@ public class ClusterPersistenceMapper {
 	public Cluster toCluster(ClusterDeploymentRequest request) {
 		Cluster cluster = new Cluster();
 		applyCluster(cluster, request.cluster());
+		cluster.setDeploymentNamespace(request != null ? request.namespace() : null);
 		DatabaseInstance databaseInstance = toDatabaseInstance(request.database(), cluster);
 		cluster.getDatabaseInstances().clear();
 		cluster.getDatabaseInstances().add(databaseInstance);

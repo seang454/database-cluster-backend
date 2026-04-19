@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.example.demo.cluster.config.ClusterDeploymentProperties;
+import com.example.demo.cluster.domain.enumtype.DatabaseEngine;
 import com.example.demo.cluster.exception.ClusterDeploymentException;
 
 import io.fabric8.kubernetes.api.model.EnvVarBuilder;
@@ -38,24 +39,28 @@ public class MinioBucketService {
 	}
 
 	public void ensureNamespaceBucket(String namespace, String releaseName) {
+		ensureNamespaceBucket(namespace, releaseName, null);
+	}
+
+	public void ensureNamespaceBucket(String namespace, String releaseName, DatabaseEngine engine) {
 		if (!StringUtils.hasText(namespace)) {
 			return;
 		}
-		String credentialsSecretName = resolveCredentialsSecretName(namespace, releaseName);
-		ResolvedMinioCredentials credentials = resolveMinioCredentials(namespace, credentialsSecretName);
+		ResolvedCredentials credentials = resolveCredentials(namespace, releaseName);
 		String bucketName = namespace;
 		String jobName = bucketJobName(releaseName);
 		deleteExistingJob(namespace, jobName);
-		createBucketJob(namespace, jobName, bucketName, releaseName, credentials.rootUser(), credentials.rootPassword());
+		createBucketJob(namespace, jobName, bucketName, releaseName, engine, credentials.rootUser(), credentials.rootPassword());
 		waitForCompletion(namespace, jobName);
 		deleteExistingJob(namespace, jobName);
 	}
 
-	private String resolveCredentialsSecretName(String namespace, String releaseName) {
+	private ResolvedCredentials resolveCredentials(String namespace, String releaseName) {
 		Duration timeout = StringUtils.hasText(properties.getMinioBucketTimeout())
 			? DurationStyle.detectAndParse(properties.getMinioBucketTimeout())
 			: Duration.ofMinutes(2);
 		Instant deadline = Instant.now().plus(timeout);
+		List<String> namespaces = resolveCredentialNamespaces(namespace);
 		List<String> candidates = List.of(
 			scopedSecretName("minio-credentials", releaseName),
 			scopedSecretName(properties.getMinioCredentialsSecretPrefix(), releaseName),
@@ -63,14 +68,16 @@ public class MinioBucketService {
 			properties.getMinioCredentialsSecretPrefix()
 		);
 		while (Instant.now().isBefore(deadline)) {
-			for (String candidate : candidates) {
-				if (StringUtils.hasText(candidate) && secretExists(namespace, candidate)) {
-					return candidate;
+			for (String candidateNamespace : namespaces) {
+				for (String candidate : candidates) {
+					if (StringUtils.hasText(candidate) && secretExists(candidateNamespace, candidate)) {
+						return new ResolvedCredentials(candidateNamespace, candidate, resolveMinioCredentials(candidateNamespace, candidate));
+					}
 				}
 			}
 			sleepQuietly(2000L);
 		}
-		throw new ClusterDeploymentException("Unable to find MinIO credentials secret in namespace " + namespace);
+		throw new ClusterDeploymentException("Unable to find MinIO credentials secret in namespaces " + String.join(", ", namespaces));
 	}
 
 	private boolean secretExists(String namespace, String name) {
@@ -98,7 +105,26 @@ public class MinioBucketService {
 		return new ResolvedMinioCredentials(rootUser, rootPassword);
 	}
 
-	private void createBucketJob(String namespace, String jobName, String bucketName, String releaseName, String rootUser, String rootPassword) {
+	private List<String> resolveCredentialNamespaces(String deploymentNamespace) {
+		List<String> namespaces = new java.util.ArrayList<>();
+		if (StringUtils.hasText(properties.getMinioCredentialsNamespace())) {
+			namespaces.add(properties.getMinioCredentialsNamespace());
+		}
+		if (StringUtils.hasText(deploymentNamespace) && !namespaces.contains(deploymentNamespace)) {
+			namespaces.add(deploymentNamespace);
+		}
+		return namespaces;
+	}
+
+	private void createBucketJob(
+		String namespace,
+		String jobName,
+		String bucketName,
+		String releaseName,
+		DatabaseEngine engine,
+		String rootUser,
+		String rootPassword
+	) {
 		String endpoint = properties.getMinioEndpointUrl();
 		if (!StringUtils.hasText(endpoint)) {
 			throw new ClusterDeploymentException("MinIO endpoint is not configured");
@@ -146,7 +172,7 @@ public class MinioBucketService {
 									new EnvVarBuilder().withName("MINIO_ENDPOINT").withValue(endpoint).build(),
 									new EnvVarBuilder().withName("MINIO_BUCKET").withValue(bucketName).build(),
 									new EnvVarBuilder().withName("MINIO_RELEASE_NAME").withValue(StringUtils.hasText(releaseName) ? releaseName : "").build(),
-									new EnvVarBuilder().withName("MINIO_DATABASE_FOLDER").withValue(chartFolderName(releaseName)).build(),
+									new EnvVarBuilder().withName("MINIO_DATABASE_FOLDER").withValue(chartFolderName(engine, releaseName)).build(),
 									new EnvVarBuilder().withName("MINIO_ROOT_USER").withValue(rootUser).build(),
 									new EnvVarBuilder().withName("MINIO_ROOT_PASSWORD").withValue(rootPassword).build()
 								))
@@ -235,11 +261,21 @@ public class MinioBucketService {
 		return StringUtils.hasText(releaseName) ? baseName + "-" + releaseName : baseName;
 	}
 
-	private String chartFolderName(String releaseName) {
+	private String chartFolderName(DatabaseEngine engine, String releaseName) {
 		if (!StringUtils.hasText(releaseName)) {
 			return "";
 		}
-		return releaseName + "-postgresql";
+		String suffix = "database";
+		if (engine != null) {
+			suffix = switch (engine) {
+				case POSTGRESQL -> "postgresql";
+				case MONGODB -> "mongodb";
+				case MYSQL -> "mysql";
+				case REDIS -> "redis";
+				case CASSANDRA -> "cassandra";
+			};
+		}
+		return releaseName + "-" + suffix;
 	}
 
 	private void sleepQuietly(long millis) {
@@ -253,5 +289,15 @@ public class MinioBucketService {
 	}
 
 	private record ResolvedMinioCredentials(String rootUser, String rootPassword) {
+	}
+
+	private record ResolvedCredentials(String namespace, String secretName, ResolvedMinioCredentials credentials) {
+		String rootUser() {
+			return credentials.rootUser();
+		}
+
+		String rootPassword() {
+			return credentials.rootPassword();
+		}
 	}
 }

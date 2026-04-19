@@ -38,6 +38,12 @@ public class ClusterResponseMapper {
 	}
 
 	public String defaultNamespace(Cluster cluster) {
+		if (cluster == null) {
+			return null;
+		}
+		if (org.springframework.util.StringUtils.hasText(cluster.getDeploymentNamespace())) {
+			return cluster.getDeploymentNamespace();
+		}
 		return cluster.getName() != null
 			? "ns-" + cluster.getName().toLowerCase().replaceAll("[^a-z0-9-]+", "-")
 			: null;

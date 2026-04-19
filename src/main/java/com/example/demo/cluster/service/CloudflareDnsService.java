@@ -51,8 +51,10 @@ public class CloudflareDnsService {
 		String apiToken = resolveApiToken(secrets);
 		String content = resolveContentIp(cluster);
 		List<String> hostnames = database.getPublicHostnames();
-		if (!hasZoneReference(cluster) || !StringUtils.hasText(apiToken) || !StringUtils.hasText(content) || hostnames == null || hostnames.isEmpty()) {
-			throw new ClusterDeploymentException("Cloudflare DNS management requires zone id or zone name, token, external IP, and at least one hostname");
+		if (!isDnsConfigurationComplete(cluster, apiToken, content, hostnames)) {
+			log.warn("Skipping Cloudflare DNS management because required configuration is incomplete: {}",
+				describeMissingDnsConfiguration(cluster, apiToken, content, hostnames));
+			return;
 		}
 		String zoneId = resolveZoneId(cluster, zoneName, apiToken);
 		for (String hostname : hostnames) {
@@ -122,11 +124,43 @@ public class CloudflareDnsService {
 				|| StringUtils.hasText(cluster.getDomain()));
 	}
 
+	private boolean isDnsConfigurationComplete(Cluster cluster, String apiToken, String content, List<String> hostnames) {
+		return hasZoneReference(cluster)
+			&& StringUtils.hasText(apiToken)
+			&& StringUtils.hasText(content)
+			&& hostnames != null
+			&& !hostnames.isEmpty();
+	}
+
+	private String describeMissingDnsConfiguration(Cluster cluster, String apiToken, String content, List<String> hostnames) {
+		List<String> missing = new java.util.ArrayList<>();
+		if (!hasZoneReference(cluster)) {
+			missing.add("zone id or zone name");
+		}
+		if (!StringUtils.hasText(apiToken)) {
+			missing.add("token");
+		}
+		if (!StringUtils.hasText(content)) {
+			missing.add("external IP");
+		}
+		if (hostnames == null || hostnames.isEmpty()) {
+			missing.add("at least one hostname");
+		}
+		return missing.isEmpty() ? "none" : String.join(", ", missing);
+	}
+
 	private String resolveApiToken(DeploymentSecretsRequest secrets) {
 		if (secrets != null && StringUtils.hasText(secrets.cloudflareApiToken())) {
-			return secrets.cloudflareApiToken();
+			String token = secrets.cloudflareApiToken().trim();
+			if (!looksLikeUnresolvedTemplate(token)) {
+				return token;
+			}
 		}
 		return properties.getDefaultCloudflareApiToken();
+	}
+
+	private boolean looksLikeUnresolvedTemplate(String value) {
+		return value != null && value.contains("{{") && value.contains("}}");
 	}
 
 	private String resolveZoneId(String zoneName, String apiToken) {

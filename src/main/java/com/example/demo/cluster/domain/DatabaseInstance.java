@@ -17,7 +17,6 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.JoinColumn;
-import jakarta.persistence.Lob;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToOne;
 import jakarta.persistence.OrderColumn;
@@ -26,6 +25,9 @@ import jakarta.persistence.Table;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Getter
 @Setter
@@ -85,7 +87,8 @@ public class DatabaseInstance extends BaseEntity {
 	@Column(name = "last_deployed_at")
 	private OffsetDateTime lastDeployedAt;
 
-	@Lob
+	@JdbcTypeCode(SqlTypes.LONGVARCHAR)
+	@Column(columnDefinition = "text")
 	private String notes;
 
 	@Embedded

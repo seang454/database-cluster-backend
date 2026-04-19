@@ -9,6 +9,7 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 public class DemoApplication {
 
 	public static void main(String[] args) {
+		EnvFileLoader.load();
 		SpringApplication.run(DemoApplication.class, args);
 	}
 

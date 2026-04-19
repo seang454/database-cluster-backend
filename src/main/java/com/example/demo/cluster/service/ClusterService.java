@@ -1,6 +1,7 @@
 package com.example.demo.cluster.service;
 
 import java.time.OffsetDateTime;
+import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
@@ -43,6 +44,7 @@ public class ClusterService {
 	private final DeploymentNamingService namingService;
 	private final DeploymentReadinessService deploymentReadinessService;
 	private final KubernetesDeploymentService kubernetesDeploymentService;
+	private final ClusterChangeRoutingService changeRoutingService;
 	private final CloudflareDnsService cloudflareDnsService;
 	private final ClusterDeploymentProperties properties;
 
@@ -54,6 +56,7 @@ public class ClusterService {
 		DeploymentNamingService namingService,
 		DeploymentReadinessService deploymentReadinessService,
 		KubernetesDeploymentService kubernetesDeploymentService,
+		ClusterChangeRoutingService changeRoutingService,
 		CloudflareDnsService cloudflareDnsService,
 		ClusterDeploymentProperties properties
 	) {
@@ -64,18 +67,21 @@ public class ClusterService {
 		this.namingService = namingService;
 		this.deploymentReadinessService = deploymentReadinessService;
 		this.kubernetesDeploymentService = kubernetesDeploymentService;
+		this.changeRoutingService = changeRoutingService;
 		this.cloudflareDnsService = cloudflareDnsService;
 		this.properties = properties;
 	}
 
-	@Transactional
 	public KubernetesDeploymentResult saveAndDeploy(ClusterDeploymentRequest request) {
+		// Keep persistence outside a single long transaction so external deploy steps
+		// do not roll back the cluster/record rows if Kubernetes or MinIO later fails.
 		validateRequest(request);
 		Cluster cluster = persistenceMapper.toCluster(request);
 		applySpringDefaults(cluster);
 		DeploymentTarget target = namingService.resolve(request);
 		cluster.setDeploymentName(target.releaseName());
-		Cluster saved = clusterRepository.findByDeploymentName(target.releaseName())
+		cluster.setDeploymentNamespace(target.namespace());
+		Cluster saved = clusterRepository.findByDeploymentNameAndDeploymentNamespace(target.releaseName(), target.namespace())
 			.map(existing -> mergeCluster(existing, cluster))
 			.orElse(cluster);
 		saved = clusterRepository.save(saved);
@@ -107,8 +113,7 @@ public class ClusterService {
 				return result;
 			}
 
-			deploymentReadinessService.verifyDeployment(target, request.database().engine());
-			record.setStatus(DeploymentStatus.DEPLOYED);
+			record.setStatus(DeploymentStatus.INSTALLING);
 			record.setFinishedAt(OffsetDateTime.now(ZoneOffset.UTC));
 			targetDatabase.setLastDeployedAt(record.getFinishedAt());
 			clusterRepository.save(saved);
@@ -163,13 +168,22 @@ public class ClusterService {
 
 	@Transactional(readOnly = true)
 	public List<ClusterConfigResponse> listClusters(String namespace) {
-		return clusterRepository.findAll().stream()
-			.filter(cluster -> !org.springframework.util.StringUtils.hasText(namespace)
-				|| namespace.equals(responseMapper.defaultNamespace(cluster)))
+		List<Cluster> clusters = clusterRepository.findAll().stream()
+			.filter(cluster -> matchesNamespace(cluster, namespace))
+			.toList();
+		if (clusters.isEmpty() && org.springframework.util.StringUtils.hasText(namespace)) {
+			clusters = deploymentRecordRepository.findByNamespaceOrderByCreatedAtDesc(namespace).stream()
+				.map(DeploymentRecord::getCluster)
+				.filter(cluster -> cluster != null)
+				.distinct()
+				.toList();
+		}
+		String resolvedNamespace = org.springframework.util.StringUtils.hasText(namespace) ? namespace : null;
+		return clusters.stream()
 			.map(cluster -> responseMapper.toConfigResponse(
 				cluster,
 				cluster.getDatabaseInstances().stream().findFirst().orElse(null),
-				new DeploymentTarget(cluster.getDeploymentName(), responseMapper.defaultNamespace(cluster))))
+				new DeploymentTarget(cluster.getDeploymentName(), resolveNamespace(cluster, resolvedNamespace))))
 			.toList();
 	}
 
@@ -284,12 +298,38 @@ public class ClusterService {
 			throw new ClusterDeploymentException("Cluster has no deployment name");
 		}
 		DeploymentTarget target = new DeploymentTarget(releaseName, namespace);
-		return kubernetesDeploymentService.updateBackupSettings(target, database.getEngine(), backup);
+		ChangeDestination destination = changeRoutingService.routeBackupSettings(request);
+		log.info(
+			"Backup settings for {} in {} routed to {} ({})",
+			releaseName,
+			namespace,
+			destination,
+			changeRoutingService.describeBackupRoute(request)
+		);
+		if (destination == ChangeDestination.OPERATOR_PATCH) {
+			return kubernetesDeploymentService.updateBackupSettings(target, database.getEngine(), backup);
+		}
+		String message = destination == ChangeDestination.HELM
+			? "Backup settings saved in the application database; Helm re-apply is required for chart-managed fields"
+			: "Backup settings saved in the application database; no live operator patch was required";
+		Instant now = OffsetDateTime.now(ZoneOffset.UTC).toInstant();
+		return new KubernetesDeploymentResult(
+			releaseName,
+			namespace,
+			List.of("db", "backup", "save"),
+			0,
+			true,
+			null,
+			message,
+			"",
+			now,
+			now
+		);
 	}
 
 	@Transactional
 	public KubernetesDeploymentResult updateBackupSettings(String releaseName, String namespace, DatabaseBackupSettingsRequest request) {
-		Cluster cluster = clusterRepository.findByDeploymentName(releaseName)
+		Cluster cluster = clusterRepository.findByDeploymentNameAndDeploymentNamespace(releaseName, namespace)
 			.orElseThrow(() -> new ClusterDeploymentException("Cluster not found for release: " + releaseName));
 		return updateBackupSettings(cluster.getId(), namespace, request);
 	}
@@ -334,6 +374,7 @@ public class ClusterService {
 		existing.setDomain(incoming.getDomain());
 		existing.setExternalIp(incoming.getExternalIp());
 		existing.setDeploymentName(incoming.getDeploymentName());
+		existing.setDeploymentNamespace(incoming.getDeploymentNamespace());
 		existing.setPlatformConfig(incoming.getPlatformConfig());
 		existing.setNotes(incoming.getNotes());
 		if (incoming.getDatabaseInstances() != null && !incoming.getDatabaseInstances().isEmpty()) {
@@ -378,9 +419,50 @@ public class ClusterService {
 	}
 
 	private void assertNamespace(Cluster cluster, String namespace) {
-		String expectedNamespace = responseMapper.defaultNamespace(cluster);
-		if (!org.springframework.util.StringUtils.hasText(namespace) || !namespace.equals(expectedNamespace)) {
+		if (!isKnownNamespace(cluster, namespace)) {
 			throw new ClusterDeploymentException("Cluster not found in namespace: " + namespace);
 		}
+	}
+
+	private boolean isKnownNamespace(Cluster cluster, String namespace) {
+		if (cluster == null || !org.springframework.util.StringUtils.hasText(namespace)) {
+			return false;
+		}
+		if (namespace.equals(cluster.getDeploymentNamespace())) {
+			return true;
+		}
+		if (namespace.equals(responseMapper.defaultNamespace(cluster))) {
+			return true;
+		}
+		if (cluster.getId() == null) {
+			return false;
+		}
+		return deploymentRecordRepository.findByClusterIdOrderByCreatedAtDesc(cluster.getId()).stream()
+			.anyMatch(record -> namespace.equals(record.getNamespace()));
+	}
+
+	private boolean matchesNamespace(Cluster cluster, String namespace) {
+		if (cluster == null) {
+			return false;
+		}
+		if (!org.springframework.util.StringUtils.hasText(namespace)) {
+			return true;
+		}
+		String storedNamespace = cluster.getDeploymentNamespace();
+		if (org.springframework.util.StringUtils.hasText(storedNamespace) && namespace.equals(storedNamespace)) {
+			return true;
+		}
+		String expectedNamespace = responseMapper.defaultNamespace(cluster);
+		return namespace.equals(expectedNamespace);
+	}
+
+	private String resolveNamespace(Cluster cluster, String fallbackNamespace) {
+		if (org.springframework.util.StringUtils.hasText(fallbackNamespace)) {
+			return fallbackNamespace;
+		}
+		if (cluster != null && org.springframework.util.StringUtils.hasText(cluster.getDeploymentNamespace())) {
+			return cluster.getDeploymentNamespace();
+		}
+		return responseMapper.defaultNamespace(cluster);
 	}
 }
