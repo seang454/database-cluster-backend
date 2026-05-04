@@ -56,6 +56,14 @@
                                                   }
                                   },
                                   {
+                                      "name":  "Download cluster CA certificate",
+                                      "request":  {
+                                                      "description":  "GET /api/namespaces/{{namespace}}/clusters/{{clusterId}}/certificate",
+                                                      "method":  "GET",
+                                                      "url":  "{{baseUrl}}/api/namespaces/{{namespace}}/clusters/{{clusterId}}/certificate"
+                                                  }
+                                  },
+                                  {
                                       "name":  "Uninstall saved cluster",
                                       "request":  {
                                                       "description":  "DELETE /api/namespaces/{{namespace}}/clusters/{{clusterId}}",
@@ -81,7 +89,7 @@
                                                                  ],
                                                       "body":  {
                                                                    "mode":  "raw",
-                                                                   "raw":  "{\n  \"releaseName\": \"db-seang-postgres\",\n  \"cluster\": {\n    \"name\": \"seang-postgres\",\n    \"notes\": \"Production PostgreSQL cluster\"\n  },\n  \"database\": {\n    \"engine\": \"POSTGRESQL\",\n    \"publicHostnames\": [\n      \"postgres-db.seang.shop\"\n    ],\n    \"backup\": {\n      \"enabled\": true,\n      \"schedule\": \"0 * * * * *\"\n    },\n    \"postgresql\": {\n      \"bootstrapDatabase\": \"appdb\",\n      \"bootstrapOwner\": \"appuser\"\n    }\n  },\n  \"secrets\": {\n    \"pgPassword\": \"secret\"\n  }\n}",
+                                                                   "raw":  "{\n  \"releaseName\": \"db-seang-postgres\",\n  \"cluster\": {\n    \"name\": \"seang-postgres\",\n    \"notes\": \"Production PostgreSQL cluster\",\n    \"platformConfig\": {\n      \"ingressEnabled\": true,\n      \"ingressClassName\": \"nginx\",\n      \"externalTcpProxyEnabled\": true,\n      \"externalTcpProxyNodeSelectorKey\": \"kubernetes.io/hostname\",\n      \"externalTcpProxyNodeSelectorValue\": \"worker03\",\n      \"externalTcpProxyClusterDomain\": \"k8scluster\"\n    }\n  },\n  \"database\": {\n    \"engine\": \"POSTGRESQL\",\n    \"publicHostnames\": [\n      \"postgres-db.seang.shop\"\n    ],\n    \"backup\": {\n      \"enabled\": true,\n      \"schedule\": \"0 * * * * *\"\n    },\n    \"postgresql\": {\n      \"bootstrapDatabase\": \"appdb\",\n      \"bootstrapOwner\": \"appuser\"\n    }\n  },\n  \"secrets\": {\n    \"pgPassword\": \"secret\"\n  }\n}",
                                                                    "options":  {
                                                                                    "raw":  {
                                                                                                "language":  "json"

@@ -42,3 +42,4 @@ build/
 out/
 *.class
 .env
+.env.example

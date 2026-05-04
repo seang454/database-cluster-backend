@@ -33,16 +33,19 @@ externalTcpProxy:
   # accept raw database TCP traffic such as 5432.
   hostNetwork: true
   dnsPolicy: ClusterFirstWithHostNet
-  # Leave empty by default so the proxy can land on any suitable node.
-  # Set labels here only if you intentionally want to pin public DB traffic
-  # to a specific subset of nodes.
-  nodeSelector: {}
+  # Pin the public TCP proxy to the same node your external DNS record points to.
+  # postgres-db.seang.shop currently resolves to worker03's public IP.
+  nodeSelector:
+    kubernetes.io/hostname: worker03
   tolerations: []
   affinity: {}
   resources: {}
   service:
     enabled: false
     type: ClusterIP
+  # Set the Kubernetes cluster domain so HAProxy can resolve service backends
+  # with a fully qualified name instead of relying on search domains.
+  clusterDomain: k8scluster
   expose:
     # Enable only the database ports you actually want HAProxy to publish.
     postgresql: true
@@ -58,6 +61,10 @@ externalTcpProxy:
     redis: 6379
     # Cassandra uses the standard 9042 port through HAProxy.
     cassandra: 9042
+  postgresql:
+    # Leave empty to derive the backend dynamically as:
+    # <release>-postgresql-rw
+    backendServiceName: ""
   timeouts:
     connect: 10s
     client: 1m
@@ -67,8 +74,14 @@ externalTcpProxy:
 # POSTGRESQL — CloudNativePG Operator
 # =============================================================================
 postgresql:
-  # PostgreSQL stays disabled here unless you explicitly turn it on.
+  # Enable PostgreSQL for the seang release so the external TCP proxy renders
+  # the PostgreSQL listener/backend on every deploy.
   enabled: false
+  # Connection handling for PostgreSQL is operator-native PgBouncer via the
+  # CloudNativePG Pooler resource.
+  connectionHandling:
+    enabled: true
+    mode: pooler
   operator:
     enabled: false
   credentials:
@@ -105,6 +118,7 @@ postgresql:
   cluster:
     instances: 3
     imageName: ghcr.io/cloudnative-pg/postgresql:16.2
+    enableSuperuserAccess: true
 
     postgresql:
       max_connections: "100"
@@ -117,7 +131,7 @@ postgresql:
       random_page_cost: "1.1"
       effective_io_concurrency: "200"
       work_mem: "4MB"
-      wal_level: "logical"
+      wal_level: "replica"
       log_connections: "off"
       log_disconnections: "off"
       log_duration: "off"
@@ -141,7 +155,7 @@ postgresql:
     switchoverDelay: 60
     failoverDelay: 0
     monitoring:
-      enabled: false
+      enablePodMonitor: true
 
   storage:
     # Persistent volume size for each PostgreSQL instance.
@@ -185,17 +199,63 @@ postgresql:
       # Daily at 02:00 UTC: 0 0 2 * * *
       # Every 6 hours:      0 0 */6 * * *
       # Weekly at Sun 03:00 UTC: 0 0 3 * * 0
-      cron: "0 * * * * *"
+      cron: "0 0 2 * * *"
       immediate: false
       suspend: false
       backupOwnerReference: self
+
+  # Optional PgBouncer layer in front of the primary/read-only service.
+  pooler:
+    enabled: true
+    # Keep a distinct name so the Pooler service cannot be confused with the
+    # cluster's built-in -rw service.
+    name: pooler-rw
+    type: rw
+    instances: 2
+    pgbouncer:
+      poolMode: transaction
+      parameters:
+        # Keep client sessions above expected app concurrency, but not so high
+        # that spikes hide real saturation. Tune with Spring Hikari settings.
+        max_client_conn: "200"
+        # Size backend pools conservatively relative to PostgreSQL max_connections.
+        default_pool_size: "20"
+    monitoring:
+      enablePodMonitor: true
+
+  alerts:
+    enabled: true
+    prometheusRuleLabels:
+      release: prometheus-stack-release
+    storage:
+      enabled: true
+      warningPercent: 80
+      criticalPercent: 90
+      for: 10m
+
+  # - name: downstream-subscription
+  #   database: appdb
+  #   subscriptionName: app_subscription
+  #   externalClusterName: upstream
+  #   publicationName: app_publication
+  #   publicationDBName: appdb
+  #   subscriptionReclaimPolicy: retain
+  #   parameters: {}
 
 # =============================================================================
 # MONGODB — Percona Operator for MongoDB
 # =============================================================================
 mongodb:
   # MongoDB replica-set values and TLS behavior.
+  # MongoDB keeps its own operator-native backup task flow and direct/service-based
+  # connection handling instead of a PostgreSQL Pooler CRD.
   enabled: false
+  # MongoDB connection handling stays driver/operator-native. Use replica set
+  # services internally and split horizons when external member endpoints are
+  # required.
+  connectionHandling:
+    enabled: true
+    mode: driver
   operator:
     enabled: false
   credentials:
@@ -237,32 +297,15 @@ mongodb:
     crVersion: "1.22.0"
     instances: 3
     image: percona/percona-server-mongodb:7.0.30-16
+    # Clear the chart's default helper sidecar list so Percona does not try to
+    # patch a broken volumeMounts entry during install/upgrade.
+    sidecars: []
     configuration: |
       net:
         tls:
           allowConnectionsWithoutCertificates: true
           clusterAuthX509:
             attributes: O=MongoDB, OU=MongoDB Server
-    env:
-      - name: PATH
-        value: /opt/percona:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-    sidecars:
-      - name: mongo-compat
-        image: busybox:1.36
-        imagePullPolicy: IfNotPresent
-        command:
-          - /bin/sh
-          - -c
-          - |
-            cat >/opt/percona/mongo <<'EOW'
-            #!/bin/sh
-            exec /usr/bin/mongosh "$@"
-            EOW
-            chmod +x /opt/percona/mongo
-            sleep infinity
-        volumeMounts:
-          - name: bin
-            mountPath: /opt/percona
     probes:
       # MongoDB replica set bootstrap and user creation can take several
       # minutes on Longhorn. The operator defaults are too aggressive and can
@@ -305,12 +348,40 @@ mongodb:
       endpointURL: "http://my-minio-minio.storage.svc:9000"
       prefix: "{{ .Release.Name }}/{{ include \"mongodb.fullname\" . }}"
 
+  alerts:
+    enabled: true
+    prometheusRuleLabels:
+      release: prometheus-stack-release
+    storage:
+      enabled: true
+      warningPercent: 80
+      criticalPercent: 90
+      for: 10m
+
+  monitoring:
+    # MongoDB uses a Prometheus exporter sidecar plus PodMonitor.
+    enabled: true
+    exporter:
+      enabled: true
+      image: percona/mongodb_exporter:0.40
+    podMonitor:
+      enabled: true
+      interval: 30s
+      scrapeTimeout: 10s
+      labels:
+        release: prometheus-stack-release
+
 # =============================================================================
 # MYSQL — Percona Operator for MySQL (PXC)
 # =============================================================================
 mysql:
   # MySQL/PXC values and external access settings.
+  # Connection fan-in is handled by the operator-managed HAProxy layer rather
+  # than a PostgreSQL-style Pooler object.
   enabled: false
+  connectionHandling:
+    enabled: true
+    mode: haproxy
   operator:
     enabled: false
   credentials:
@@ -342,6 +413,8 @@ mysql:
         group: cert-manager.io
 
   haproxy:
+    # MySQL/PXC uses operator-managed HAProxy as the connection-handling layer.
+    enabled: true
     # The Percona operator enforces at least two HAProxy replicas as a safe
     # default. Match that here to avoid endless reconciliation churn.
     size: 2
@@ -390,12 +463,42 @@ mysql:
       endpointURL: "http://my-minio-minio.storage.svc:9000"
       prefix: "{{ .Release.Name }}/{{ include \"mysql.fullname\" . }}"
 
+  alerts:
+    enabled: true
+    prometheusRuleLabels:
+      release: prometheus-stack-release
+    storage:
+      enabled: true
+      warningPercent: 80
+      criticalPercent: 90
+      for: 10m
+
+  monitoring:
+    # MySQL/PXC uses a Prometheus exporter sidecar plus PodMonitor.
+    enabled: true
+    exporter:
+      enabled: true
+      image: prom/mysqld-exporter:v0.19.0
+    podMonitor:
+      enabled: true
+      interval: 30s
+      scrapeTimeout: 10s
+      labels:
+        release: prometheus-stack-release
+
 # =============================================================================
 # REDIS — OpsTree Redis Operator
 # =============================================================================
 redis:
   # Redis cluster values and TLS settings.
+  # Redis keeps direct cluster connectivity. Use the exporter for metrics and
+  # the external TCP proxy for public access when needed.
   enabled: false
+  # Redis connection handling is client-native. Applications should use their
+  # own Redis client pools; this chart does not add a separate proxy layer.
+  connectionHandling:
+    enabled: true
+    mode: client
   operator:
     enabled: false
   auth:
@@ -448,19 +551,60 @@ redis:
     size: 5Gi
     storageClass: longhorn
 
+  backup:
+    # Redis does not have an operator-native scheduled backup CR in this chart,
+    # so backups are produced by a CronJob that runs redis-cli --rdb and uploads
+    # the snapshot to MinIO/S3.
+    enabled: true
+    image: alpine:3.20
+    imagePullPolicy: IfNotPresent
+    schedule:
+      enabled: true
+      cron: "40 2 * * *"
+    s3:
+      bucket: "{{ .Release.Namespace }}"
+      credentialSecret: ""
+      accessKeyKey: root-user
+      secretKeyKey: root-password
+      endpointURL: "http://my-minio-minio.storage.svc:9000"
+      prefix: "{{ .Release.Name }}/{{ include \"redis.fullname\" . }}"
+
   exporter:
-    # Exporter is off by default to keep the footprint down.
-    enabled: false
+    # Redis metrics are exposed through the operator's native redis-exporter.
+    enabled: true
     image: quay.io/opstree/redis-exporter:v1.44.0
-  # This Redis chart does not currently define a backup integration.
-  # Keep Redis persistence enabled, or add a separate snapshot/backup workflow.
+
+  monitoring:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+      scrapeTimeout: 10s
+      namespace: ""
+
+  alerts:
+    enabled: true
+    prometheusRuleLabels:
+      release: prometheus-stack-release
+    storage:
+      enabled: true
+      warningPercent: 80
+      criticalPercent: 90
+      for: 10m
 
 # =============================================================================
 # CASSANDRA — K8ssandra Operator
 # =============================================================================
 cassandra:
   # Cassandra uses the chart-managed TLS bootstrap path.
+  # Cassandra keeps its own Medusa backup schedule and direct service-based
+  # connectivity instead of a PostgreSQL Pooler.
   enabled: false
+  # Cassandra connection handling is driver-native. Applications should rely on
+  # Cassandra driver session pooling instead of a standalone proxy/pooler CRD.
+  connectionHandling:
+    enabled: true
+    mode: driver
   operator:
     enabled: false
   credentials:
@@ -546,3 +690,19 @@ cassandra:
       port: 9000
       secure: false
 
+  alerts:
+    enabled: true
+    prometheusRuleLabels:
+      release: prometheus-stack-release
+    storage:
+      enabled: true
+      warningPercent: 80
+      criticalPercent: 90
+      for: 10m
+
+  monitoring:
+    enabled: true
+    prometheus:
+      enabled: true
+      commonLabels:
+        release: prometheus-stack-release
